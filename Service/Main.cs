@@ -3,10 +3,10 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Dynamic;
-using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using System.Diagnostics;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using net.vieapps.Components.Security;
@@ -24,6 +24,8 @@ namespace net.vieapps.Services.Logs
 
 		bool IsServiceLogsDisabled { get; set; } = false;
 
+		bool IsWriteServiceLogsDirectly { get; set; } = false;
+
 		bool CleaningServiceLogs { get; set; } = false;
 
 		bool FlushingServiceLogs { get; set; } = false;
@@ -34,6 +36,10 @@ namespace net.vieapps.Services.Logs
 		{
 			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/disable")) != null)
 				this.IsServiceLogsDisabled = true;
+
+			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/direct")) != null)
+				this.IsWriteServiceLogsDirectly = true;
+
 			return base.StartAsync(args, initializeRepository, next);
 		}
 
@@ -71,6 +77,49 @@ namespace net.vieapps.Services.Logs
 					this.ServiceLogsInstance = null;
 				}
 			await base.UnregisterServiceAsync(args, available, onSuccess, onError).ConfigureAwait(false);
+		}
+
+		public override void DoWork(string[] args = null)
+		{
+			var stopwatch = Stopwatch.StartNew();
+			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/flush")) != null)
+			{
+				if (this.IsDebugLogEnabled)
+					this.Logger.LogDebug("Start flush logs from files into database");
+
+				this.FlushLogsAsync()
+#if NETSTANDARD2_0
+					.Wait();
+#else
+					.ConfigureAwait(false)
+					.GetAwaiter()
+					.GetResult();
+#endif
+
+				stopwatch.Stop();
+				if (this.IsDebugLogEnabled)
+					this.Logger.LogDebug($"Complete flush logs from files into database - Execution times: {stopwatch.GetElapsedTimes()}");
+			}
+
+			stopwatch = Stopwatch.StartNew();
+			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/clean")) != null)
+			{
+				if (this.IsDebugLogEnabled)
+					this.Logger.LogDebug("Start clean old logs from database");
+
+				this.CleanLogsAsync()
+#if NETSTANDARD2_0
+					.Wait();
+#else
+					.ConfigureAwait(false)
+					.GetAwaiter()
+					.GetResult();
+#endif
+
+				stopwatch.Stop();
+				if (this.IsDebugLogEnabled)
+					this.Logger.LogDebug($"Complete clean old logs from database - Execution times: {stopwatch.GetElapsedTimes()}");
+			}
 		}
 
 		public override async Task<JToken> ProcessRequestAsync(RequestInfo requestInfo, CancellationToken cancellationToken = default)
@@ -157,11 +206,13 @@ namespace net.vieapps.Services.Logs
 			=> this.WriteLogsAsync(new[] { log }, cancellationToken);
 
 		Task WriteLogsAsync(IEnumerable<ServiceLog> logs, CancellationToken cancellationToken)
-			=> logs.ForEachAsync(async log =>
-			{
-				var filePath = Path.Combine(this.LogsPath, $"logs.services.{DateTime.Now:yyyyMMddHHmmss}.{UtilityService.NewUUID}.json");
-				await UtilityService.WriteTextFileAsync(filePath, log.ToString(Formatting.Indented), false, null, cancellationToken).ConfigureAwait(false);
-			}, true, false);
+			=> this.IsWriteServiceLogsDirectly
+				? this.FlushLogsAsync(logs, cancellationToken)
+				: logs.ForEachAsync(async log =>
+				{
+					var filePath = Path.Combine(this.LogsPath, $"logs.services.{DateTime.Now:yyyyMMddHHmmss}.{UtilityService.NewUUID}.json");
+					await UtilityService.WriteTextFileAsync(filePath, log.ToString(Formatting.Indented), false, null, cancellationToken).ConfigureAwait(false);
+				}, true, false);
 
 		public Task WriteLogAsync(string correlationID, string developerID, string appID, string serviceName, string objectName, string log, string stack = null, CancellationToken cancellationToken = default)
 			=> this.WriteLogsAsync(correlationID, developerID, appID, serviceName, objectName, string.IsNullOrWhiteSpace(log) ? null : new List<string> { log }, stack, cancellationToken);
@@ -208,7 +259,17 @@ namespace net.vieapps.Services.Logs
 		}
 
 		Task FlushLogsAsync(IEnumerable<ServiceLog> logs, CancellationToken cancellationToken)
-			=> logs.Where(log => log != null).OrderBy(log => log.Time).ForEachAsync(async log => await ServiceLog.CreateAsync(log, cancellationToken).ConfigureAwait(false), true, false);
+			=> logs.Where(log => log != null).OrderBy(log => log.Time).ForEachAsync(async log =>
+			{
+				try
+				{
+					await ServiceLog.CreateAsync(log, cancellationToken).ConfigureAwait(false);
+				}
+				catch (Exception ex)
+				{
+					this.Logger.LogError($"Error occurred while flushing log into database => {ex.Message}", ex);
+				}
+			}, true, false);
 
 		async Task<JToken> FetchLogsAsync(int pageNumber, int pageSize, string correlationID, string developerID, string appID, string serviceName, string objectName, CancellationToken cancellationToken)
 		{
