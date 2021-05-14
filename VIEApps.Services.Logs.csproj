@@ -17,14 +17,14 @@
 
 	<ItemGroup>
 		<None Remove=".DS_Store" />
+		<None Remove=".gitattributes" />
+		<None Remove=".gitignore" />
+		<None Remove="LICENSE.md" />
+		<None Remove="README.md" />
 	</ItemGroup>
 
 	<ItemGroup>
 		<PackageReference Include="VIEApps.Services.Base" Version="10.4.2105.1" />
-	</ItemGroup>
-
-	<ItemGroup>
-	  <ProjectReference Include="..\Abstractions\VIEApps.Services.Logs.Abstractions.csproj" />
 	</ItemGroup>
 
 </Project>

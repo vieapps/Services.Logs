@@ -304,4 +304,7 @@ namespace net.vieapps.Services.Logs
 			return ServiceLog.DeleteManyAsync(filter, null, this.CancellationToken);
 		}
 	}
+
+	[Repository]
+	public abstract class Repository<T> : RepositoryBase<T> where T : class { }
 }
