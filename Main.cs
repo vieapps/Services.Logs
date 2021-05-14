@@ -245,7 +245,12 @@ namespace net.vieapps.Services.Logs
 						using (var reader = new StreamReader(filePath))
 						{
 							var json = await reader.ReadToEndAsync(this.CancellationToken).ConfigureAwait(false);
-							logs.Add(json.FromJson<ServiceLog>());
+							logs.Add(json.FromJson<ServiceLog>(false, (log, _) =>
+							{
+								log.ID = string.IsNullOrWhiteSpace(log.ID) ? UtilityService.NewUUID : log.ID;
+								log.ServiceName = log.ServiceName?.ToLower();
+								log.ObjectName = log.ObjectName?.ToLower();
+							}));
 						}
 					}
 					catch (Exception ex)
