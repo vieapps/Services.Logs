@@ -16,68 +16,15 @@ using net.vieapps.Components.Utility;
 
 namespace net.vieapps.Services.Logs
 {
-	public class ServiceComponent : ServiceBase, ILoggingService
+	public class ServiceComponent : ServiceBase
 	{
-		IAsyncDisposable ServiceLogsInstance { get; set; }
-
 		string LogsPath { get; } = UtilityService.GetAppSetting("Path:Logs", "logs");
-
-		bool IsServiceLogsDisabled { get; set; } = false;
-
-		bool IsWriteServiceLogsDirectly { get; set; } = false;
 
 		bool CleaningServiceLogs { get; set; } = false;
 
 		bool FlushingServiceLogs { get; set; } = false;
 
 		public override string ServiceName => "Logs";
-
-		public override Task StartAsync(string[] args = null, bool initializeRepository = true, Action<IService> next = null)
-		{
-			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/disable")) != null)
-				this.IsServiceLogsDisabled = true;
-
-			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/direct")) != null)
-				this.IsWriteServiceLogsDirectly = true;
-
-			return base.StartAsync(args, initializeRepository, next);
-		}
-
-		public override async Task RegisterServiceAsync(IEnumerable<string> args = null, Action<IService> onSuccess = null, Action<Exception> onError = null)
-		{
-			if (!this.IsServiceLogsDisabled)
-			{
-				this.Logger.LogWarning("Initializing the instance of the logging service");
-				if (this.ServiceLogsInstance != null)
-					try
-					{
-						await this.ServiceLogsInstance.DisposeAsync().ConfigureAwait(false);
-					}
-					catch { }
-				this.ServiceLogsInstance = await Router.IncomingChannel.RealmProxy.Services.RegisterCallee<ILoggingService>(() => this, RegistrationInterceptor.Create()).ConfigureAwait(false);
-				this.Logger.LogWarning($"The instance of the logging service was successfully registered");
-			}
-			await base.RegisterServiceAsync(args, onSuccess, onError).ConfigureAwait(false);
-		}
-
-		public override async Task UnregisterServiceAsync(IEnumerable<string> args, bool available = true, Action<IService> onSuccess = null, Action<Exception> onError = null)
-		{
-			if (this.ServiceLogsInstance != null)
-				try
-				{
-					await this.ServiceLogsInstance.DisposeAsync().ConfigureAwait(false);
-					this.Logger.LogWarning("The instance of the logging service was successfully unregistered");
-				}
-				catch (Exception ex)
-				{
-					this.Logger.LogError($"Error occurred while unregistering the instance of the logging service => {ex.Message}", ex);
-				}
-				finally
-				{
-					this.ServiceLogsInstance = null;
-				}
-			await base.UnregisterServiceAsync(args, available, onSuccess, onError).ConfigureAwait(false);
-		}
 
 		public override void DoWork(string[] args = null)
 		{
@@ -206,13 +153,11 @@ namespace net.vieapps.Services.Logs
 			=> this.WriteLogsAsync(new[] { log }, cancellationToken);
 
 		Task WriteLogsAsync(IEnumerable<ServiceLog> logs, CancellationToken cancellationToken)
-			=> this.IsWriteServiceLogsDirectly
-				? this.FlushLogsAsync(logs, cancellationToken)
-				: logs.ForEachAsync(async log =>
-				{
-					var filePath = Path.Combine(this.LogsPath, $"logs.services.{DateTime.Now:yyyyMMddHHmmss}.{UtilityService.NewUUID}.json");
-					await UtilityService.WriteTextFileAsync(filePath, log.ToString(Formatting.Indented), false, null, cancellationToken).ConfigureAwait(false);
-				}, true, false);
+			=> logs.ForEachAsync(async log =>
+			{
+				var filePath = Path.Combine(this.LogsPath, $"logs.services.{DateTime.Now:yyyyMMddHHmmss}.{UtilityService.NewUUID}.json");
+				await UtilityService.WriteTextFileAsync(filePath, log.ToString(Formatting.Indented), false, null, cancellationToken).ConfigureAwait(false);
+			}, true, false);
 
 		public Task WriteLogAsync(string correlationID, string developerID, string appID, string serviceName, string objectName, string log, string stack = null, CancellationToken cancellationToken = default)
 			=> this.WriteLogsAsync(correlationID, developerID, appID, serviceName, objectName, string.IsNullOrWhiteSpace(log) ? null : new List<string> { log }, stack, cancellationToken);
