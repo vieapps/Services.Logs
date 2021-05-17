@@ -24,6 +24,8 @@ namespace net.vieapps.Services.Logs
 
 		bool FlushingServiceLogs { get; set; } = false;
 
+		bool WriteServiceLogsIntoSeparatedFiles { get; } = "true".IsEquals(UtilityService.GetAppSetting("Logs:WriteServiceLogsIntoSeparatedFiles"));
+
 		public override string ServiceName => "Logs";
 
 		public override void DoWork(string[] args = null)
@@ -34,15 +36,7 @@ namespace net.vieapps.Services.Logs
 				if (this.IsDebugLogEnabled)
 					this.Logger.LogDebug("Start flush logs from files into database");
 
-				this.FlushLogsAsync()
-#if NETSTANDARD2_0
-					.Wait();
-#else
-					.ConfigureAwait(false)
-					.GetAwaiter()
-					.GetResult();
-#endif
-
+				this.FlushLogsAsync().Run(true);
 				stopwatch.Stop();
 				if (this.IsDebugLogEnabled)
 					this.Logger.LogDebug($"Complete flush logs from files into database - Execution times: {stopwatch.GetElapsedTimes()}");
@@ -54,15 +48,7 @@ namespace net.vieapps.Services.Logs
 				if (this.IsDebugLogEnabled)
 					this.Logger.LogDebug("Start clean old logs from database");
 
-				this.CleanLogsAsync()
-#if NETSTANDARD2_0
-					.Wait();
-#else
-					.ConfigureAwait(false)
-					.GetAwaiter()
-					.GetResult();
-#endif
-
+				this.CleanLogsAsync().Run(true);
 				stopwatch.Stop();
 				if (this.IsDebugLogEnabled)
 					this.Logger.LogDebug($"Complete clean old logs from database - Execution times: {stopwatch.GetElapsedTimes()}");
@@ -214,6 +200,12 @@ namespace net.vieapps.Services.Logs
 				try
 				{
 					await ServiceLog.CreateAsync(log, cancellationToken).ConfigureAwait(false);
+					if (this.WriteServiceLogsIntoSeparatedFiles)
+					{
+						var content = $"{log.Time:HH:mm:ss.fff}{(string.IsNullOrWhiteSpace(log.DeveloperID) ? "" : $" [Dev: {log.DeveloperID}]")}{(string.IsNullOrWhiteSpace(log.AppID) ? "" : $" [App: {log.AppID}]")} {log.Logs} [{log.CorrelationID}]{(string.IsNullOrWhiteSpace(log.Stack) ? "" : $"\r\n{log.Stack}")}\r\n";
+						var filename = $"{log.Time:yyyyMMddHH}_{log.ServiceName}{(string.IsNullOrWhiteSpace(log.ObjectName) || log.ServiceName.IsEquals(log.ObjectName) ? "" : $".{log.ObjectName}")}.txt";
+						await UtilityService.WriteTextFileAsync(Path.Combine(this.LogsPath, filename), content, true, null, cancellationToken).ConfigureAwait(false);
+					}
 				}
 				catch (Exception ex)
 				{
