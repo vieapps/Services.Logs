@@ -28,6 +28,12 @@ namespace net.vieapps.Services.Logs
 
 		public override string ServiceName => "Logs";
 
+		public override void Start(string[] args = null, bool initializeRepository = true, Action<IService> next = null)
+		{
+			this.Syncable = false;
+			base.Start(args, initializeRepository, next);
+		}
+
 		public override void DoWork(string[] args = null)
 		{
 			var stopwatch = Stopwatch.StartNew();
@@ -197,19 +203,22 @@ namespace net.vieapps.Services.Logs
 		Task FlushLogsAsync(IEnumerable<ServiceLog> logs, CancellationToken cancellationToken)
 			=> logs.Where(log => log != null).OrderBy(log => log.Time).ForEachAsync(async log =>
 			{
+				// update database
 				try
 				{
 					await ServiceLog.CreateAsync(log, cancellationToken).ConfigureAwait(false);
-					if (this.WriteServiceLogsIntoSeparatedFiles)
-					{
-						var content = $"{log.Time:HH:mm:ss.fff}{(string.IsNullOrWhiteSpace(log.DeveloperID) ? "" : $" [Dev: {log.DeveloperID}]")}{(string.IsNullOrWhiteSpace(log.AppID) ? "" : $" [App: {log.AppID}]")} {log.Logs} [{log.CorrelationID}]{(string.IsNullOrWhiteSpace(log.Stack) ? "" : $"\r\n{log.Stack}")}\r\n";
-						var filename = $"{log.Time:yyyyMMddHH}_{log.ServiceName}{(string.IsNullOrWhiteSpace(log.ObjectName) || log.ServiceName.IsEquals(log.ObjectName) ? "" : $".{log.ObjectName}")}.txt";
-						await UtilityService.WriteTextFileAsync(Path.Combine(this.LogsPath, filename), content, true, null, cancellationToken).ConfigureAwait(false);
-					}
 				}
 				catch (Exception ex)
 				{
 					this.Logger.LogError($"Error occurred while flushing log into database => {ex.Message}", ex);
+				}
+
+				// write to separated files
+				if (this.WriteServiceLogsIntoSeparatedFiles)
+				{
+					var content = $"{log.Time:HH:mm:ss.fff}{(string.IsNullOrWhiteSpace(log.DeveloperID) ? "" : $" [Dev: {log.DeveloperID}]")}{(string.IsNullOrWhiteSpace(log.AppID) ? "" : $" [App: {log.AppID}]")} {log.Logs} [{log.CorrelationID}]{(string.IsNullOrWhiteSpace(log.Stack) ? "" : $"\r\n{log.Stack}")}\r\n";
+					var filename = $"{log.Time:yyyyMMddHH}_{log.ServiceName}{(string.IsNullOrWhiteSpace(log.ObjectName) || log.ServiceName.IsEquals(log.ObjectName) ? "" : $".{log.ObjectName}")}.txt";
+					await UtilityService.WriteTextFileAsync(Path.Combine(this.LogsPath, filename), content, true, null, cancellationToken).ConfigureAwait(false);
 				}
 			}, true, false);
 
