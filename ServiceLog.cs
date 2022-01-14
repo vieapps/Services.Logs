@@ -25,6 +25,9 @@ namespace net.vieapps.Services.Logs
 		[Property(MaxLength = 32), Sortable(IndexName = "IDs")]
 		public string AppID { get; set; }
 
+		[Property(MaxLength = 150), Sortable(IndexName = "IDs")]
+		public string NodeID { get; set; }
+
 		[Property(MaxLength = 50, NotNull = true), Sortable(IndexName = "Services")]
 		public new string ServiceName { get; set; }
 
