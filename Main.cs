@@ -148,7 +148,7 @@ namespace net.vieapps.Services.Logs
 			=> logs.ForEachAsync(async log =>
 			{
 				var filePath = Path.Combine(this.LogsPath, $"logs.services.{DateTime.Now:yyyyMMddHHmmss}.{UtilityService.NewUUID}.json");
-				await UtilityService.WriteTextFileAsync(filePath, log.ToString(Formatting.Indented), false, null, cancellationToken).ConfigureAwait(false);
+				await log.ToString(Formatting.Indented).ToBytes().SaveAsTextAsync(filePath, cancellationToken).ConfigureAwait(false);
 			}, true, false);
 
 		public Task WriteLogAsync(string correlationID, string developerID, string appID, string serviceName, string objectName, string log, string stack = null, CancellationToken cancellationToken = default)
@@ -218,7 +218,7 @@ namespace net.vieapps.Services.Logs
 				{
 					var content = $"{log.Time:HH:mm:ss.fff}{(string.IsNullOrWhiteSpace(log.DeveloperID) ? "" : $" [Dev: {log.DeveloperID}]")}{(string.IsNullOrWhiteSpace(log.AppID) ? "" : $" [App: {log.AppID}]")} {log.Logs} [{log.CorrelationID}]{(string.IsNullOrWhiteSpace(log.Stack) ? "" : $"\r\n{log.Stack}")}\r\n";
 					var filename = $"{log.Time:yyyyMMddHH}_{log.ServiceName}{(string.IsNullOrWhiteSpace(log.ObjectName) || log.ServiceName.IsEquals(log.ObjectName) ? "" : $".{log.ObjectName}")}.txt";
-					await UtilityService.WriteTextFileAsync(Path.Combine(this.LogsPath, filename), content, true, null, cancellationToken).ConfigureAwait(false);
+					await content.ToBytes().SaveAsTextAsync(Path.Combine(this.LogsPath, filename), cancellationToken, true).ConfigureAwait(false);
 				}
 			}, true, false);
 
