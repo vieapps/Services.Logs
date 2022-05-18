@@ -226,15 +226,15 @@ namespace net.vieapps.Services.Logs
 		{
 			var filter = Filters<ServiceLog>.And();
 			if (!string.IsNullOrWhiteSpace(correlationID))
-				filter.Add(Filters<ServiceLog>.Equals("CorrelationID", correlationID));
+				filter.Add(Filters<ServiceLog>.Equals("CorrelationID", correlationID.Trim().ToLower()));
 			if (!string.IsNullOrWhiteSpace(developerID))
-				filter.Add(Filters<ServiceLog>.Equals("DeveloperID", developerID));
+				filter.Add(Filters<ServiceLog>.Equals("DeveloperID", developerID.Trim().ToLower()));
 			if (!string.IsNullOrWhiteSpace(appID))
-				filter.Add(Filters<ServiceLog>.Equals("AppID", appID));
+				filter.Add(Filters<ServiceLog>.Equals("AppID", appID.Trim().ToLower()));
 			if (!string.IsNullOrWhiteSpace(serviceName))
-				filter.Add(Filters<ServiceLog>.Equals("ServiceName", serviceName));
+				filter.Add(Filters<ServiceLog>.Equals("ServiceName", serviceName.Trim().ToLower()));
 			if (!string.IsNullOrWhiteSpace(objectName))
-				filter.Add(Filters<ServiceLog>.Equals("ObjectName", objectName));
+				filter.Add(Filters<ServiceLog>.Equals("ObjectName", objectName.Trim().ToLower()));
 
 			var totalRecords = await ServiceLog.CountAsync(filter, null, false, null, 0, cancellationToken).ConfigureAwait(false);
 			var totalPages = new Tuple<long, int>(totalRecords, pageSize).GetTotalPages();
@@ -251,7 +251,7 @@ namespace net.vieapps.Services.Logs
 		{
 			if (this.IsDebugLogEnabled)
 				this.Logger.LogDebug($"Clean old service logs");
-			var filter = Filters<ServiceLog>.LessThan("Time", DateTime.Now.AddDays(0 - (Int32.TryParse(UtilityService.GetAppSetting("Logs:Days", "3"), out var days) && days > 0 ? days : 3)));
+			var filter = Filters<ServiceLog>.LessThan("Time", DateTime.Now.AddDays(0 - (Int32.TryParse(UtilityService.GetAppSetting("Logs:Days", "5"), out var days) && days > 0 ? days : 5)));
 			return ServiceLog.DeleteManyAsync(filter, null, this.CancellationToken);
 		}
 	}
