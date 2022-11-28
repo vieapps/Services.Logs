@@ -84,7 +84,7 @@ namespace net.vieapps.Services.Logs
 							}
 							else if (requestInfo.Verb.IsEquals("POST"))
 							{
-								await this.WriteLogAsync(requestInfo.Body.FromJson<ServiceLog>(false, (log, _) =>
+								await this.WriteLogAsync(requestInfo.Body.ToJson().As<ServiceLog>(false, (log, _) =>
 								{
 									log.ID = string.IsNullOrWhiteSpace(log.ID) ? UtilityService.NewUUID : log.ID;
 									log.ServiceName = log.ServiceName?.ToLower();
@@ -123,7 +123,6 @@ namespace net.vieapps.Services.Logs
 				}
 
 			else if (message.Type.IsEquals("Flush"))
-			{
 				if (!this.FlushingServiceLogs)
 					try
 					{
@@ -138,7 +137,6 @@ namespace net.vieapps.Services.Logs
 					{
 						this.FlushingServiceLogs = false;
 					}
-			}
 		}
 
 		Task WriteLogAsync(ServiceLog log, CancellationToken cancellationToken)
@@ -155,16 +153,16 @@ namespace net.vieapps.Services.Logs
 			=> this.WriteLogsAsync(correlationID, developerID, appID, serviceName, objectName, string.IsNullOrWhiteSpace(log) ? null : new List<string> { log }, stack, cancellationToken);
 
 		public Task WriteLogsAsync(string correlationID, string developerID, string appID, string serviceName, string objectName, List<string> logs, string stack = null, CancellationToken cancellationToken = default)
-				=> this.WriteLogAsync(new ServiceLog
-				{
-					CorrelationID = correlationID,
-					DeveloperID = string.IsNullOrWhiteSpace(developerID) ? null : developerID,
-					AppID = string.IsNullOrWhiteSpace(appID) ? null : appID,
-					ServiceName = (string.IsNullOrWhiteSpace(serviceName) ? "APIGateway" : serviceName).ToLower(),
-					ObjectName = (string.IsNullOrWhiteSpace(objectName) || objectName.IsEquals(serviceName) ? "" : objectName).ToLower(),
-					Logs = "" + logs?.Where(log => !string.IsNullOrWhiteSpace(log)).Join("\r\n"),
-					Stack = string.IsNullOrWhiteSpace(stack) ? null : stack
-				}, cancellationToken);
+			=> this.WriteLogAsync(new ServiceLog
+			{
+				CorrelationID = correlationID,
+				DeveloperID = string.IsNullOrWhiteSpace(developerID) ? null : developerID,
+				AppID = string.IsNullOrWhiteSpace(appID) ? null : appID,
+				ServiceName = (string.IsNullOrWhiteSpace(serviceName) ? "APIGateway" : serviceName).ToLower(),
+				ObjectName = (string.IsNullOrWhiteSpace(objectName) || objectName.IsEquals(serviceName) ? "" : objectName).ToLower(),
+				Logs = "" + logs?.Where(log => !string.IsNullOrWhiteSpace(log)).Join("\r\n"),
+				Stack = string.IsNullOrWhiteSpace(stack) ? null : stack
+			}, cancellationToken);
 
 		async Task FlushLogsAsync()
 		{
@@ -181,8 +179,8 @@ namespace net.vieapps.Services.Logs
 					{
 						using (var reader = new StreamReader(filePath))
 						{
-							var json = await reader.ReadToEndAsync(this.CancellationToken).ConfigureAwait(false);
-							logs.Add(json.FromJson<ServiceLog>(false, (log, _) =>
+							var data = await reader.ReadToEndAsync(this.CancellationToken).ConfigureAwait(false);
+							logs.Add(data.ToJson().As<ServiceLog>(false, (log, _) =>
 							{
 								log.ID = string.IsNullOrWhiteSpace(log.ID) ? UtilityService.NewUUID : log.ID;
 								log.ServiceName = log.ServiceName?.ToLower();
@@ -251,7 +249,7 @@ namespace net.vieapps.Services.Logs
 		{
 			if (this.IsDebugLogEnabled)
 				this.Logger.LogDebug($"Clean old service logs");
-			var filter = Filters<ServiceLog>.LessThan("Time", DateTime.Now.AddDays(0 - (Int32.TryParse(UtilityService.GetAppSetting("Logs:Days", "5"), out var days) && days > 0 ? days : 5)));
+			var filter = Filters<ServiceLog>.LessThan("Time", DateTime.Now.AddDays(0 - (Int32.TryParse(UtilityService.GetAppSetting("Logs:Days", "2"), out var days) && days > 0 ? days : 2)));
 			return ServiceLog.DeleteManyAsync(filter, null, this.CancellationToken);
 		}
 	}
