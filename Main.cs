@@ -166,7 +166,7 @@ namespace net.vieapps.Services.Logs
 
 		async Task FlushLogsAsync()
 		{
-			var filePaths = Directory.EnumerateFiles(this.LogsPath, "logs.services.*.json").ToList();
+			var filePaths = Directory.EnumerateFiles(this.LogsPath, "logs.services.*.json").Take(10000).ToList();
 			if (filePaths.Count > 0)
 			{
 				if (this.IsDebugLogEnabled)
@@ -193,7 +193,7 @@ namespace net.vieapps.Services.Logs
 						this.Logger.LogError($"Error occurred while reading JSON file => {ex.Message}", ex);
 					}
 					File.Delete(filePath);
-				}).ConfigureAwait(false);
+				}, true, false).ConfigureAwait(false);
 				await this.FlushLogsAsync(logs, this.CancellationToken).ConfigureAwait(false);
 			}
 		}
