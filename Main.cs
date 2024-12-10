@@ -166,7 +166,7 @@ namespace net.vieapps.Services.Logs
 
 		async Task FlushLogsAsync()
 		{
-			var filePaths = Directory.EnumerateFiles(this.LogsPath, "logs.services.*.json").Take(10000).ToList();
+			var filePaths = Directory.EnumerateFiles(this.LogsPath, "logs.services.*.json").Take(1000).ToList();
 			if (filePaths.Count > 0)
 			{
 				if (this.IsDebugLogEnabled)
@@ -187,12 +187,13 @@ namespace net.vieapps.Services.Logs
 								log.ObjectName = log.ObjectName?.ToLower();
 							}));
 						}
+						File.Delete(filePath);
 					}
+					catch (FileNotFoundException) { }
 					catch (Exception ex)
 					{
 						this.Logger.LogError($"Error occurred while reading JSON file => {ex.Message}", ex);
 					}
-					File.Delete(filePath);
 				}, true, false).ConfigureAwait(false);
 				await this.FlushLogsAsync(logs, this.CancellationToken).ConfigureAwait(false);
 			}
@@ -213,11 +214,16 @@ namespace net.vieapps.Services.Logs
 
 				// write to separated files
 				if (this.WriteServiceLogsIntoSeparatedFiles)
-				{
-					var content = $"{log.Time:HH:mm:ss.fff}{(string.IsNullOrWhiteSpace(log.DeveloperID) ? "" : $" [Dev: {log.DeveloperID}]")}{(string.IsNullOrWhiteSpace(log.AppID) ? "" : $" [App: {log.AppID}]")} {log.Logs} [{log.CorrelationID}]{(string.IsNullOrWhiteSpace(log.Stack) ? "" : $"\r\n{log.Stack}")}\r\n";
-					var filename = $"{log.Time:yyyyMMddHH}_{log.ServiceName}{(string.IsNullOrWhiteSpace(log.ObjectName) || log.ServiceName.IsEquals(log.ObjectName) ? "" : $".{log.ObjectName}")}.txt";
-					await content.ToBytes().SaveAsTextAsync(Path.Combine(this.LogsPath, filename), cancellationToken, true).ConfigureAwait(false);
-				}
+					try
+					{
+						var content = $"{log.Time:HH:mm:ss.fff}{(string.IsNullOrWhiteSpace(log.DeveloperID) ? "" : $" [Dev: {log.DeveloperID}]")}{(string.IsNullOrWhiteSpace(log.AppID) ? "" : $" [App: {log.AppID}]")} {log.Logs} [{log.CorrelationID}]{(string.IsNullOrWhiteSpace(log.Stack) ? "" : $"\r\n{log.Stack}")}\r\n";
+						var filename = $"{log.Time:yyyyMMddHH}_{log.ServiceName}{(string.IsNullOrWhiteSpace(log.ObjectName) || log.ServiceName.IsEquals(log.ObjectName) ? "" : $".{log.ObjectName}")}.txt";
+						await content.ToBytes().SaveAsTextAsync(Path.Combine(this.LogsPath, filename), cancellationToken, true).ConfigureAwait(false);
+					}
+					catch (Exception ex)
+					{
+						this.Logger.LogError($"Error occurred while writting log into separated file => {ex.Message}", ex);
+					}
 			}, true, false);
 
 		async Task<JToken> FetchLogsAsync(int pageNumber, int pageSize, string correlationID, string developerID, string appID, string serviceName, string objectName, CancellationToken cancellationToken)
@@ -235,12 +241,12 @@ namespace net.vieapps.Services.Logs
 				filter.Add(Filters<ServiceLog>.Equals("ObjectName", objectName.Trim().ToLower()));
 
 			var totalRecords = await ServiceLog.CountAsync(filter, null, false, null, 0, cancellationToken).ConfigureAwait(false);
-			var totalPages = new Tuple<long, int>(totalRecords, pageSize).GetTotalPages();
+			var totalPages = (totalRecords, pageSize).GetTotalPages();
 			var objects = await ServiceLog.FindAsync(filter, Sorts<ServiceLog>.Descending("Time"), pageSize, pageNumber, null, false, null, 0, cancellationToken).ConfigureAwait(false);
 
 			return new JObject
 			{
-				{ "Pagination", new Tuple<long, int, int, int>(totalRecords, totalPages, pageSize, totalPages > 0 && pageNumber > totalPages ? totalPages : pageNumber).GetPagination() },
+				{ "Pagination", (totalRecords, totalPages, pageSize, totalPages > 0 && pageNumber > totalPages ? totalPages : pageNumber).GetPagination() },
 				{ "Objects", objects.Select(obj => obj.ToJson()).ToJArray() }
 			};
 		}
