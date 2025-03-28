@@ -36,27 +36,29 @@ namespace net.vieapps.Services.Logs
 
 		public override void DoWork(string[] args = null)
 		{
+			var isDebugLogEnabled = this.IsDebugLogEnabled || args?.FirstOrDefault(arg => arg.IsStartsWith("/debug-logs")) != null || args?.FirstOrDefault(arg => arg.IsStartsWith("/logs")) != null;
+
 			var stopwatch = Stopwatch.StartNew();
 			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/flush")) != null)
 			{
-				if (this.IsDebugLogEnabled)
+				if (isDebugLogEnabled)
 					this.Logger.LogDebug("Start flush logs from files into database");
 
-				this.FlushLogsAsync().Run(true);
+				this.FlushLogsAsync(args).Run(ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex), true);
 				stopwatch.Stop();
-				if (this.IsDebugLogEnabled)
+				if (isDebugLogEnabled)
 					this.Logger.LogDebug($"Complete flush logs from files into database - Execution times: {stopwatch.GetElapsedTimes()}");
 			}
 
 			stopwatch = Stopwatch.StartNew();
 			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/clean")) != null)
 			{
-				if (this.IsDebugLogEnabled)
+				if (isDebugLogEnabled)
 					this.Logger.LogDebug("Start clean old logs from database");
 
-				this.CleanLogsAsync().Run(true);
+				this.CleanLogsAsync().Run(ex => this.Logger.LogError($"Error occurred while cleaning logs => {ex.Message}", ex), true);
 				stopwatch.Stop();
-				if (this.IsDebugLogEnabled)
+				if (isDebugLogEnabled)
 					this.Logger.LogDebug($"Complete clean old logs from database - Execution times: {stopwatch.GetElapsedTimes()}");
 			}
 		}
@@ -164,30 +166,35 @@ namespace net.vieapps.Services.Logs
 				Stack = string.IsNullOrWhiteSpace(stack) ? null : stack
 			}, cancellationToken);
 
-		async Task FlushLogsAsync()
+		async Task FlushLogsAsync(string[] args = null)
 		{
-			var filePaths = Directory.EnumerateFiles(this.LogsPath, "logs.services.*.json").Take(1000).ToList();
-			if (filePaths.Count > 0)
-			{
-				if (this.IsDebugLogEnabled)
-					this.Logger.LogDebug($"Flush service logs from {filePaths.Count:###,###,##0} files");
+			var isDebugLogEnabled = this.IsDebugLogEnabled || args?.FirstOrDefault(arg => arg.IsStartsWith("/debug-logs")) != null || args?.FirstOrDefault(arg => arg.IsStartsWith("/logs")) != null;
 
+			var numberOfLogs = Int32.TryParse(args?.FirstOrDefault(arg => arg.IsStartsWith("/number:"))?.Replace("/number:", ""), out var numberOfItems) && numberOfItems > 0 ? numberOfItems : Int32.TryParse(UtilityService.GetAppSetting("Logs:Numbers"), out numberOfItems) && numberOfItems > 0 ? numberOfItems : 3000;
+			if (isDebugLogEnabled)
+				this.Logger.LogDebug($"Get {numberOfLogs:###,###,##0} log files");
+
+			var stopwatch = Stopwatch.StartNew();
+			var files = Directory.EnumerateFiles(this.LogsPath, "logs.services.*.json").Take(numberOfLogs).Select(path => new FileInfo(path)).OrderBy(fileInfo => fileInfo.Name).ToList();
+			if (isDebugLogEnabled)
+				this.Logger.LogDebug($"Done fetch {files.Count:###,###,##0} log files - Times for fetching: {stopwatch.GetElapsedTimes()}");
+
+			if (files.Count > 0)
+			{
 				var logs = new List<ServiceLog>();
-				await filePaths.ForEachAsync(async filePath =>
+				stopwatch.Restart();
+				await files.ForEachAsync(async file =>
 				{
 					try
 					{
-						using (var reader = new StreamReader(filePath))
+						var json = await file.ReadAsJsonAsync(this.CancellationToken).ConfigureAwait(false);
+						logs.Add(json.As<ServiceLog>(false, (log, _) =>
 						{
-							var data = await reader.ReadToEndAsync(this.CancellationToken).ConfigureAwait(false);
-							logs.Add(data.ToJson().As<ServiceLog>(false, (log, _) =>
-							{
-								log.ID = string.IsNullOrWhiteSpace(log.ID) ? UtilityService.NewUUID : log.ID;
-								log.ServiceName = log.ServiceName?.ToLower();
-								log.ObjectName = log.ObjectName?.ToLower();
-							}));
-						}
-						File.Delete(filePath);
+							log.ID = string.IsNullOrWhiteSpace(log.ID) ? UtilityService.NewUUID : log.ID;
+							log.ServiceName = log.ServiceName?.ToLower();
+							log.ObjectName = log.ObjectName?.ToLower();
+						}));
+						File.Delete(file.FullName);
 					}
 					catch (FileNotFoundException) { }
 					catch (Exception ex)
@@ -195,12 +202,18 @@ namespace net.vieapps.Services.Logs
 						this.Logger.LogError($"Error occurred while reading JSON file => {ex.Message}", ex);
 					}
 				}, true, false).ConfigureAwait(false);
+				if (isDebugLogEnabled)
+					this.Logger.LogDebug($"Done prepare logs from {files.Count:###,###,##0} files - Times for preparing: {stopwatch.GetElapsedTimes()}");
+
+				stopwatch.Restart();
 				await this.FlushLogsAsync(logs, this.CancellationToken).ConfigureAwait(false);
+				if (isDebugLogEnabled)
+					this.Logger.LogDebug($"Done flush {logs.Count:###,###,##0} logs into database - Times for flushing: {stopwatch.GetElapsedTimes()}");
 			}
 		}
 
 		Task FlushLogsAsync(IEnumerable<ServiceLog> logs, CancellationToken cancellationToken)
-			=> logs.Where(log => log != null).OrderBy(log => log.Time).ForEachAsync(async log =>
+			=> logs.Where(log => log != null).ForEachAsync(async log =>
 			{
 				// update database
 				try
