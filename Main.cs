@@ -142,7 +142,7 @@ namespace net.vieapps.Services.Logs
 		}
 
 		Task WriteLogAsync(ServiceLog log, CancellationToken cancellationToken)
-			=> this.WriteLogsAsync(new[] { log }, cancellationToken);
+			=> this.WriteLogsAsync([log], cancellationToken);
 
 		Task WriteLogsAsync(IEnumerable<ServiceLog> logs, CancellationToken cancellationToken)
 			=> logs.ForEachAsync(async log =>
@@ -255,10 +255,14 @@ namespace net.vieapps.Services.Logs
 
 			var totalRecords = await ServiceLog.CountAsync(filter, null, false, null, 0, cancellationToken).ConfigureAwait(false);
 			var totalPages = (totalRecords, pageSize).GetTotalPages();
-			var objects = await ServiceLog.FindAsync(filter, Sorts<ServiceLog>.Descending("Time"), pageSize, pageNumber, null, false, null, 0, cancellationToken).ConfigureAwait(false);
+
+			var sort = Sorts<ServiceLog>.Descending("Time");
+			var objects = await ServiceLog.FindAsync(filter, sort, pageSize, pageNumber, null, false, null, 0, cancellationToken).ConfigureAwait(false);
 
 			return new JObject
 			{
+				{ "FilterBy", filter.ToClientJson() },
+				{ "SortBy", sort.ToClientJson() },
 				{ "Pagination", (totalRecords, totalPages, pageSize, totalPages > 0 && pageNumber > totalPages ? totalPages : pageNumber).GetPagination() },
 				{ "Objects", objects.Select(obj => obj.ToJson()).ToJArray() }
 			};
