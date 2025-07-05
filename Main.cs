@@ -44,7 +44,7 @@ namespace net.vieapps.Services.Logs
 				if (isDebugLogEnabled)
 					this.Logger.LogDebug("Start flush logs from files into database");
 
-				this.FlushLogsAsync(args).Run(ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex), true);
+				this.FlushLogsAsync(args).Run(true, ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex));
 				stopwatch.Stop();
 				if (isDebugLogEnabled)
 					this.Logger.LogDebug($"Complete flush logs from files into database - Execution times: {stopwatch.GetElapsedTimes()}");
@@ -56,7 +56,7 @@ namespace net.vieapps.Services.Logs
 				if (isDebugLogEnabled)
 					this.Logger.LogDebug("Start clean old logs from database");
 
-				this.CleanLogsAsync().Run(ex => this.Logger.LogError($"Error occurred while cleaning logs => {ex.Message}", ex), true);
+				this.CleanLogsAsync().Run(true, ex => this.Logger.LogError($"Error occurred while cleaning logs => {ex.Message}", ex));
 				stopwatch.Stop();
 				if (isDebugLogEnabled)
 					this.Logger.LogDebug($"Complete clean old logs from database - Execution times: {stopwatch.GetElapsedTimes()}");
@@ -152,7 +152,7 @@ namespace net.vieapps.Services.Logs
 			}, true, false);
 
 		public Task WriteLogAsync(string correlationID, string developerID, string appID, string serviceName, string objectName, string log, string stack = null, CancellationToken cancellationToken = default)
-			=> this.WriteLogsAsync(correlationID, developerID, appID, serviceName, objectName, string.IsNullOrWhiteSpace(log) ? null : new List<string> { log }, stack, cancellationToken);
+			=> this.WriteLogsAsync(correlationID, developerID, appID, serviceName, objectName, string.IsNullOrWhiteSpace(log) ? null : [log], stack, cancellationToken);
 
 		public Task WriteLogsAsync(string correlationID, string developerID, string appID, string serviceName, string objectName, List<string> logs, string stack = null, CancellationToken cancellationToken = default)
 			=> this.WriteLogAsync(new ServiceLog
