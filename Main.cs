@@ -222,7 +222,7 @@ namespace net.vieapps.Services.Logs
 				}
 				catch (Exception ex)
 				{
-					this.Logger.LogError($"Error occurred while flushing log into database => {ex.Message}", ex);
+					this.Logger.LogError($"Error occurred while flushing log into database => {ex.Message}{(ex is RepositoryOperationException ? $"\r\n{log.ToJson()}" : "")}", ex);
 				}
 
 				// write to separated files
