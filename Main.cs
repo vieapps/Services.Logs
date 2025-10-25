@@ -18,6 +18,10 @@ namespace net.vieapps.Services.Logs
 {
 	public class ServiceComponent : ServiceBase
 	{
+		public override string ServiceName => "Logs";
+
+		#region Properties
+
 		string LogsPath { get; } = UtilityService.GetAppSetting("Path:Logs", "logs");
 
 		bool CleaningServiceLogs { get; set; } = false;
@@ -25,8 +29,7 @@ namespace net.vieapps.Services.Logs
 		bool FlushingServiceLogs { get; set; } = false;
 
 		bool WriteServiceLogsIntoSeparatedFiles { get; } = "true".IsEquals(UtilityService.GetAppSetting("Logs:WriteServiceLogsIntoSeparatedFiles"));
-
-		public override string ServiceName => "Logs";
+		#endregion
 
 		public override void Start(string[] args = null, bool initializeRepository = true, Action<IService> next = null)
 		{
