@@ -178,7 +178,7 @@ namespace net.vieapps.Services.Logs
 				this.Logger.LogDebug($"Get {numberOfLogs:###,###,##0} log files");
 
 			var stopwatch = Stopwatch.StartNew();
-			var files = Directory.EnumerateFiles(this.LogsPath, "logs.services.*.json").Take(numberOfLogs).Select(path => new FileInfo(path)).OrderBy(fileInfo => fileInfo.Name).ToList();
+			var files = Directory.EnumerateFiles(this.LogsPath, "zlogs.services.*.json").Take(numberOfLogs).Select(path => new FileInfo(path)).OrderBy(fileInfo => fileInfo.Name).ToList();
 			if (isDebugLogEnabled)
 				this.Logger.LogDebug($"Done fetch {files.Count:###,###,##0} log files - Times for fetching: {stopwatch.GetElapsedTimes()}");
 
