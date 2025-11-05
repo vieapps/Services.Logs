@@ -44,22 +44,28 @@ namespace net.vieapps.Services.Logs
 			var stopwatch = Stopwatch.StartNew();
 			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/flush")) != null)
 			{
+				var triedTimes = 0;
 				if (isDebugLogEnabled)
 					this.Logger.LogDebug("Start flush logs from files into database");
 
-				this.FlushLogsAsync(args).Run(true, ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex));
+				while (triedTimes < 3)
+				{
+					this.FlushLogsAsync(args).Execute(true, ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex));
+					triedTimes++;
+				}
+
 				stopwatch.Stop();
 				if (isDebugLogEnabled)
 					this.Logger.LogDebug($"Complete flush logs from files into database - Execution times: {stopwatch.GetElapsedTimes()}");
 			}
 
-			stopwatch = Stopwatch.StartNew();
+			stopwatch.Restart();
 			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/clean")) != null)
 			{
 				if (isDebugLogEnabled)
 					this.Logger.LogDebug("Start clean old logs from database");
 
-				this.CleanLogsAsync().Run(true, ex => this.Logger.LogError($"Error occurred while cleaning logs => {ex.Message}", ex));
+				this.CleanLogsAsync().Execute(true, ex => this.Logger.LogError($"Error occurred while cleaning logs => {ex.Message}", ex));
 				stopwatch.Stop();
 				if (isDebugLogEnabled)
 					this.Logger.LogDebug($"Complete clean old logs from database - Execution times: {stopwatch.GetElapsedTimes()}");
@@ -150,7 +156,7 @@ namespace net.vieapps.Services.Logs
 		Task WriteLogsAsync(IEnumerable<ServiceLog> logs, CancellationToken cancellationToken)
 			=> logs.ForEachAsync(async log =>
 			{
-				var filePath = Path.Combine(this.LogsPath, $"logs.services.{DateTime.Now:yyyyMMddHHmmss}.{UtilityService.NewUUID}.json");
+				var filePath = Path.Combine(this.LogsPath, $"zlogs.services.{DateTime.Now:yyyyMMddHHmmssffffff}.{UtilityService.NewUUID}.json");
 				await log.ToString(Formatting.Indented).ToBytes().SaveAsTextAsync(filePath, cancellationToken).ConfigureAwait(false);
 			}, true, false);
 
@@ -178,7 +184,7 @@ namespace net.vieapps.Services.Logs
 				this.Logger.LogDebug($"Get {numberOfLogs:###,###,##0} log files");
 
 			var stopwatch = Stopwatch.StartNew();
-			var files = Directory.EnumerateFiles(this.LogsPath, "zlogs.services.*.json").Take(numberOfLogs).Select(path => new FileInfo(path)).OrderBy(fileInfo => fileInfo.Name).ToList();
+			var files = UtilityService.GetFiles(this.LogsPath, "*.json", numberOfLogs);
 			if (isDebugLogEnabled)
 				this.Logger.LogDebug($"Done fetch {files.Count:###,###,##0} log files - Times for fetching: {stopwatch.GetElapsedTimes()}");
 
@@ -232,8 +238,8 @@ namespace net.vieapps.Services.Logs
 				if (this.WriteServiceLogsIntoSeparatedFiles)
 					try
 					{
-						var content = $"{log.Time:HH:mm:ss.fff}{(string.IsNullOrWhiteSpace(log.DeveloperID) ? "" : $" [Dev: {log.DeveloperID}]")}{(string.IsNullOrWhiteSpace(log.AppID) ? "" : $" [App: {log.AppID}]")} {log.Logs} [{log.CorrelationID}]{(string.IsNullOrWhiteSpace(log.Stack) ? "" : $"\r\n{log.Stack}")}\r\n";
-						var filename = $"{log.Time:yyyyMMddHH}_{log.ServiceName}{(string.IsNullOrWhiteSpace(log.ObjectName) || log.ServiceName.IsEquals(log.ObjectName) ? "" : $".{log.ObjectName}")}.txt";
+						var content = $"{log.Time:HH:mm:ss.ffffff}{(string.IsNullOrWhiteSpace(log.DeveloperID) ? "" : $" [Dev: {log.DeveloperID}]")}{(string.IsNullOrWhiteSpace(log.AppID) ? "" : $" [App: {log.AppID}]")} {log.Logs} [{log.CorrelationID}]{(string.IsNullOrWhiteSpace(log.Stack) ? "" : $"\r\n{log.Stack}")}\r\n";
+						var filename = $"{log.ServiceName}{(string.IsNullOrWhiteSpace(log.ObjectName) || log.ServiceName.IsEquals(log.ObjectName) ? "" : $".{log.ObjectName}")}-{log.Time:yyyyMMddHH}.txt";
 						await content.ToBytes().SaveAsTextAsync(Path.Combine(this.LogsPath, filename), cancellationToken, true).ConfigureAwait(false);
 					}
 					catch (Exception ex)
