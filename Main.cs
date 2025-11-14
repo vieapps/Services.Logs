@@ -29,6 +29,8 @@ namespace net.vieapps.Services.Logs
 		bool FlushingServiceLogs { get; set; } = false;
 
 		bool WriteServiceLogsIntoSeparatedFiles { get; } = "true".IsEquals(UtilityService.GetAppSetting("Logs:WriteServiceLogsIntoSeparatedFiles"));
+
+		int MaxTriedTimes { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:MaxTriedTimes"), out var maxTriedTimes) && maxTriedTimes > 0 ? maxTriedTimes : 1;
 		#endregion
 
 		public override void Start(string[] args = null, bool initializeRepository = true, Action<IService> next = null)
@@ -48,7 +50,7 @@ namespace net.vieapps.Services.Logs
 				if (isDebugLogEnabled)
 					this.Logger.LogDebug("Start flush logs from files into database");
 
-				while (triedTimes < 3)
+				while (triedTimes < this.MaxTriedTimes)
 				{
 					this.FlushLogsAsync(args).Execute(true, ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex));
 					triedTimes++;
