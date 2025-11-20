@@ -30,7 +30,7 @@ namespace net.vieapps.Services.Logs
 
 		bool WriteServiceLogsIntoSeparatedFiles { get; } = "true".IsEquals(UtilityService.GetAppSetting("Logs:WriteServiceLogsIntoSeparatedFiles"));
 
-		int MaxTriedTimes { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:MaxTriedTimes"), out var maxTriedTimes) && maxTriedTimes > 0 ? maxTriedTimes : 1;
+		int MaxTriedTimes { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:MaxTriedTimes"), out var maxTriedTimes) && maxTriedTimes > 0 ? maxTriedTimes : 3;
 		#endregion
 
 		public override void Start(string[] args = null, bool initializeRepository = true, Action<IService> next = null)
@@ -49,6 +49,9 @@ namespace net.vieapps.Services.Logs
 				var triedTimes = 0;
 				if (isDebugLogEnabled)
 					this.Logger.LogDebug("Start flush logs from files into database");
+
+				this.FlushLogsAsync((args ?? []).Concat(["/order-mode:Descending"])).Execute(true, ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex));
+				triedTimes++;
 
 				while (triedTimes < this.MaxTriedTimes)
 				{
@@ -186,7 +189,7 @@ namespace net.vieapps.Services.Logs
 				this.Logger.LogDebug($"Get {numberOfLogs:###,###,##0} log files");
 
 			var stopwatch = Stopwatch.StartNew();
-			var files = UtilityService.GetFiles(this.LogsPath, "*.json", numberOfLogs);
+			var files = UtilityService.GetFiles(this.LogsPath, "*.json", numberOfLogs, orderMode: args?.FirstOrDefault(arg => arg.IsStartsWith("/order-mode:"))?.Replace("/order-mode:", "") ?? "Ascending");
 			if (isDebugLogEnabled)
 				this.Logger.LogDebug($"Done fetch {files.Count:###,###,##0} log files - Times for fetching: {stopwatch.GetElapsedTimes()}");
 
