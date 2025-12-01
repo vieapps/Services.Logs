@@ -55,7 +55,7 @@ namespace net.vieapps.Services.Logs
 
 				while (triedTimes < this.MaxTriedTimes)
 				{
-					this.FlushLogsAsync(args).Execute(true, ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex));
+					this.FlushLogsAsync((args ?? []).Concat(["/number:3000"])).Execute(true, ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex));
 					triedTimes++;
 				}
 
