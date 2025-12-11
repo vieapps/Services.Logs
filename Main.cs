@@ -100,7 +100,7 @@ namespace net.vieapps.Services.Logs
 							}
 							else if (requestInfo.Verb.IsEquals("POST"))
 							{
-								await this.WriteLogAsync(requestInfo.Body.ToJson().As<ServiceLog>(false, (log, _) =>
+								await this.WriteLogAsync(requestInfo.BodyAsJson.As<ServiceLog>(false, (log, _) =>
 								{
 									log.ID = string.IsNullOrWhiteSpace(log.ID) ? UtilityService.NewUUID : log.ID;
 									log.ServiceName = log.ServiceName?.ToLower();
@@ -226,21 +226,19 @@ namespace net.vieapps.Services.Logs
 			}
 		}
 
-		Task FlushLogsAsync(IEnumerable<ServiceLog> logs, CancellationToken cancellationToken)
-			=> logs.Where(log => log != null).ForEachAsync(async log =>
+		async Task FlushLogsAsync(IEnumerable<ServiceLog> logs, CancellationToken cancellationToken)
+		{
+			try
 			{
-				// update database
-				try
+				await ServiceLog.CreateManyAsync(logs.Where(log => log != null), cancellationToken).ConfigureAwait(false);
+			}
+			catch (Exception ex)
+			{
+				this.Logger.LogError($"Error occurred while flushing log into database => {ex.Message}", ex);
+			}
+			if (this.WriteServiceLogsIntoSeparatedFiles)
+				await logs.Where(log => log != null).ForEachAsync(async log =>
 				{
-					await ServiceLog.CreateAsync(log, cancellationToken).ConfigureAwait(false);
-				}
-				catch (Exception ex)
-				{
-					this.Logger.LogError($"Error occurred while flushing log into database => {ex.Message}{(ex is RepositoryOperationException ? $"\r\n{log.ToJson()}" : "")}", ex);
-				}
-
-				// write to separated files
-				if (this.WriteServiceLogsIntoSeparatedFiles)
 					try
 					{
 						var content = $"{log.Time:HH:mm:ss.ffffff}{(string.IsNullOrWhiteSpace(log.DeveloperID) ? "" : $" [Dev: {log.DeveloperID}]")}{(string.IsNullOrWhiteSpace(log.AppID) ? "" : $" [App: {log.AppID}]")} {log.Logs} [{log.CorrelationID}]{(string.IsNullOrWhiteSpace(log.Stack) ? "" : $"\r\n{log.Stack}")}\r\n";
@@ -251,7 +249,8 @@ namespace net.vieapps.Services.Logs
 					{
 						this.Logger.LogError($"Error occurred while writting log into separated file => {ex.Message}", ex);
 					}
-			}, true, false);
+				}, true, false).ConfigureAwait(false);
+		}
 
 		async Task<JToken> FetchLogsAsync(int pageNumber, int pageSize, string correlationID, string developerID, string appID, string serviceName, string objectName, CancellationToken cancellationToken)
 		{
