@@ -13,25 +13,25 @@ namespace net.vieapps.Services.Logs
 		public ServiceLog() : base()
 			=> this.ID = UtilityService.NewUUID;
 
-		[Sortable(IndexName = "Time")]
+		[Sortable(IndexName = "Time", CompoundIndexName = "IDs", Reverse = true, ExpireAfter = 259200)]
 		public DateTime Time { get; set; } = DateTime.Now;
 
 		[Property(MaxLength = 32, NotNull = true), Sortable(IndexName = "IDs")]
 		public string CorrelationID { get; set; }
 
-		[Property(MaxLength = 32), Sortable(IndexName = "IDs")]
+		[Property(MaxLength = 32)]
 		public string DeveloperID { get; set; }
 
-		[Property(MaxLength = 32), Sortable(IndexName = "IDs")]
+		[Property(MaxLength = 32)]
 		public string AppID { get; set; }
 
-		[Property(MaxLength = 150), Sortable(IndexName = "IDs")]
+		[Property(MaxLength = 150)]
 		public string NodeID { get; set; }
 
 		[Property(MaxLength = 50, NotNull = true), Sortable(IndexName = "Services")]
 		public new string ServiceName { get; set; }
 
-		[Property(MaxLength = 50), Sortable(IndexName = "Services")]
+		[Property(MaxLength = 50)]
 		public new string ObjectName { get; set; }
 
 		[Property(NotNull = true, IsCLOB = true)]

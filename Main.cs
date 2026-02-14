@@ -285,7 +285,7 @@ namespace net.vieapps.Services.Logs
 		{
 			if (this.IsDebugLogEnabled)
 				this.Logger.LogDebug($"Clean old service logs");
-			var filter = Filters<ServiceLog>.LessThan("Time", DateTime.Now.AddDays(0 - (Int32.TryParse(UtilityService.GetAppSetting("Logs:Days", "2"), out var days) && days > 0 ? days : 2)));
+			var filter = Filters<ServiceLog>.LessThan("Time", DateTime.Now.AddDays(0 - (Int32.TryParse(UtilityService.GetAppSetting("Logs:Days", "3"), out var days) && days > 0 ? days : 2)));
 			return ServiceLog.DeleteManyAsync(filter, null, this.CancellationToken);
 		}
 	}
