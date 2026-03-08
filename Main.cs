@@ -21,7 +21,6 @@ namespace net.vieapps.Services.Logs
 		public override string ServiceName => "Logs";
 
 		#region Properties
-
 		string LogsPath { get; } = UtilityService.GetAppSetting("Path:Logs", "logs");
 
 		bool CleaningServiceLogs { get; set; } = false;
@@ -30,7 +29,9 @@ namespace net.vieapps.Services.Logs
 
 		bool WriteServiceLogsIntoSeparatedFiles { get; } = "true".IsEquals(UtilityService.GetAppSetting("Logs:WriteServiceLogsIntoSeparatedFiles"));
 
-		int MaxTriedTimes { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:MaxTriedTimes"), out var maxTriedTimes) && maxTriedTimes > 0 ? maxTriedTimes : 3;
+		int MaxTriedTimes { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:MaxTriedTimes"), out var numbers) && numbers > 0 ? numbers : 2;
+
+		int NumberOfLogItems { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:Numbers"), out var numbers) && numbers > 0 ? numbers : 2000;
 		#endregion
 
 		public override void Start(string[] args = null, bool initializeRepository = true, Action<IService> next = null)
@@ -41,39 +42,43 @@ namespace net.vieapps.Services.Logs
 
 		public override void DoWork(string[] args = null)
 		{
-			var isDebugLogEnabled = this.IsDebugLogEnabled || args?.FirstOrDefault(arg => arg.IsStartsWith("/debug-logs")) != null || args?.FirstOrDefault(arg => arg.IsStartsWith("/logs")) != null;
+			var isDebugLogEnabled = this.IsDebugLogEnabled || args?.FirstOrDefault(arg => arg.IsStartsWith("/logs")) != null;
 
 			var stopwatch = Stopwatch.StartNew();
 			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/flush")) != null)
 			{
-				var triedTimes = 0;
 				if (isDebugLogEnabled)
-					this.Logger.LogDebug("Start flush logs from files into database");
+					this.Logger.LogInformation("Start flush logs from files into database");
 
-				this.FlushLogsAsync((args ?? []).Concat(["/order-mode:Descending"])).Execute(true, ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex));
-				triedTimes++;
-
-				while (triedTimes < this.MaxTriedTimes)
+				if (this.MaxTriedTimes > 1)
 				{
-					this.FlushLogsAsync((args ?? []).Concat(["/number:3000"])).Execute(true, ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex));
+					var triedTimes = 0;
+					this.FlushLogsAsync((args ?? []).Concat(["/order-mode:Descending"])).Execute(true, ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex));
 					triedTimes++;
+					while (triedTimes < this.MaxTriedTimes)
+					{
+						this.FlushLogsAsync(args).Execute(true, ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex));
+						triedTimes++;
+					}
 				}
+				else
+					this.FlushLogsAsync(args).Execute(true, ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex));
 
 				stopwatch.Stop();
 				if (isDebugLogEnabled)
-					this.Logger.LogDebug($"Complete flush logs from files into database - Execution times: {stopwatch.GetElapsedTimes()}");
+					this.Logger.LogInformation($"Complete flush logs from files into database - Execution times: {stopwatch.GetElapsedTimes()}");
 			}
 
 			stopwatch.Restart();
 			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/clean")) != null)
 			{
 				if (isDebugLogEnabled)
-					this.Logger.LogDebug("Start clean old logs from database");
+					this.Logger.LogInformation("Start clean old logs from database");
 
 				this.CleanLogsAsync().Execute(true, ex => this.Logger.LogError($"Error occurred while cleaning logs => {ex.Message}", ex));
 				stopwatch.Stop();
 				if (isDebugLogEnabled)
-					this.Logger.LogDebug($"Complete clean old logs from database - Execution times: {stopwatch.GetElapsedTimes()}");
+					this.Logger.LogInformation($"Complete clean old logs from database - Execution times: {stopwatch.GetElapsedTimes()}");
 			}
 		}
 
@@ -159,11 +164,7 @@ namespace net.vieapps.Services.Logs
 			=> this.WriteLogsAsync([log], cancellationToken);
 
 		Task WriteLogsAsync(IEnumerable<ServiceLog> logs, CancellationToken cancellationToken)
-			=> logs.ForEachAsync(async log =>
-			{
-				var filePath = Path.Combine(this.LogsPath, $"zlogs.services.{DateTime.Now:yyyyMMddHHmmssffffff}.{UtilityService.NewUUID}.json");
-				await log.ToString(Formatting.Indented).ToBytes().SaveAsTextAsync(filePath, cancellationToken).ConfigureAwait(false);
-			}, true, false);
+			=> logs.ForEachAsync(log => log.ToString(Formatting.Indented).SaveAsTextAsync(Path.Combine(this.LogsPath, $"zlogs.services.{DateTime.Now:yyyyMMddHHmmssffffff}.{UtilityService.NewUUID}.json"), cancellationToken), true, false);
 
 		public Task WriteLogAsync(string correlationID, string developerID, string appID, string serviceName, string objectName, string log, string stack = null, CancellationToken cancellationToken = default)
 			=> this.WriteLogsAsync(correlationID, developerID, appID, serviceName, objectName, string.IsNullOrWhiteSpace(log) ? null : [log], stack, cancellationToken);
@@ -182,60 +183,89 @@ namespace net.vieapps.Services.Logs
 
 		async Task FlushLogsAsync(string[] args = null)
 		{
-			var isDebugLogEnabled = this.IsDebugLogEnabled || args?.FirstOrDefault(arg => arg.IsStartsWith("/debug-logs")) != null || args?.FirstOrDefault(arg => arg.IsStartsWith("/logs")) != null;
+			var isDebugLogEnabled = this.IsDebugLogEnabled || args?.FirstOrDefault(arg => arg.IsStartsWith("/logs")) != null;
 
-			var numberOfLogs = Int32.TryParse(args?.FirstOrDefault(arg => arg.IsStartsWith("/number:"))?.Replace("/number:", ""), out var numberOfItems) && numberOfItems > 0 ? numberOfItems : Int32.TryParse(UtilityService.GetAppSetting("Logs:Numbers"), out numberOfItems) && numberOfItems > 0 ? numberOfItems : 3000;
+			var numberOfLogs = Int32.TryParse(args?.FirstOrDefault(arg => arg.IsStartsWith("/number:"))?.Replace("/number:", ""), out var numberOfItems) && numberOfItems > 0 ? numberOfItems : this.NumberOfLogItems;
 			if (isDebugLogEnabled)
-				this.Logger.LogDebug($"Get {numberOfLogs:###,###,##0} log files");
+				this.Logger.LogInformation($"Get {numberOfLogs:###,###,##0} log files");
 
 			var stopwatch = Stopwatch.StartNew();
-			var files = UtilityService.GetFiles(this.LogsPath, "*.json", numberOfLogs, orderMode: args?.FirstOrDefault(arg => arg.IsStartsWith("/order-mode:"))?.Replace("/order-mode:", "") ?? "Ascending");
+			var filePaths = UtilityService.GetFiles(this.LogsPath, "*.json", numberOfLogs, orderMode: args?.FirstOrDefault(arg => arg.IsStartsWith("/order-mode:"))?.Replace("/order-mode:", "") ?? "Ascending");
 			if (isDebugLogEnabled)
-				this.Logger.LogDebug($"Done fetch {files.Count:###,###,##0} log files - Times for fetching: {stopwatch.GetElapsedTimes()}");
+				this.Logger.LogInformation($"Done fetch {filePaths.Count:###,###,##0} log files - Times for fetching: {stopwatch.GetElapsedTimes()}");
 
-			if (files.Count > 0)
+			if (filePaths.Count > 0)
 			{
 				var logs = new List<ServiceLog>();
 				stopwatch.Restart();
-				await files.ForEachAsync(async file =>
+				await filePaths.ForEachAsync(async filePath =>
 				{
 					try
 					{
-						var json = await file.ReadAsJsonAsync(this.CancellationToken).ConfigureAwait(false);
-						logs.Add(json.As<ServiceLog>(false, (log, _) =>
+						await UtilityService.ReadAsJsonAsync(filePath, this.CancellationToken, null, json => logs.Add(json.As<ServiceLog>(false, (log, _) =>
 						{
 							log.ID = string.IsNullOrWhiteSpace(log.ID) ? UtilityService.NewUUID : log.ID;
 							log.ServiceName = log.ServiceName?.ToLower();
 							log.ObjectName = log.ObjectName?.ToLower();
-						}));
-						File.Delete(file.FullName);
+						}))).ConfigureAwait(false);
 					}
+					catch (UnauthorizedAccessException) { }
 					catch (FileNotFoundException) { }
 					catch (Exception ex)
 					{
-						this.Logger.LogError($"Error occurred while reading JSON file => {ex.Message}", ex);
+						if (!ex.Message.IsContains("cannot access the file"))
+							this.Logger.LogError($"Error occurred while reading JSON file => {ex.Message}", ex);
 					}
-				}, true, false).ConfigureAwait(false);
+					finally
+					{
+						try
+						{
+							File.Delete(filePath);
+						}
+						catch { }
+					}
+				}).ConfigureAwait(false);
 				if (isDebugLogEnabled)
-					this.Logger.LogDebug($"Done prepare logs from {files.Count:###,###,##0} files - Times for preparing: {stopwatch.GetElapsedTimes()}");
+					this.Logger.LogInformation($"Done prepare logs from {filePaths.Count:###,###,##0} files - Times for preparing: {stopwatch.GetElapsedTimes()}");
 
 				stopwatch.Restart();
-				await this.FlushLogsAsync(logs, this.CancellationToken).ConfigureAwait(false);
+				await this.FlushLogsAsync(logs, isDebugLogEnabled, this.CancellationToken).ConfigureAwait(false);
 				if (isDebugLogEnabled)
-					this.Logger.LogDebug($"Done flush {logs.Count:###,###,##0} logs into database - Times for flushing: {stopwatch.GetElapsedTimes()}");
+					this.Logger.LogInformation($"Done flush {logs.Count:###,###,##0} logs into database - Times for flushing: {stopwatch.GetElapsedTimes()}");
 			}
 		}
 
-		async Task FlushLogsAsync(IEnumerable<ServiceLog> logs, CancellationToken cancellationToken)
+		async Task FlushLogsAsync(IEnumerable<ServiceLog> logs, bool isDebugLogEnabled, CancellationToken cancellationToken)
 		{
-			try
+			async Task flushLogsAsync(IEnumerable<ServiceLog> input)
 			{
-				await ServiceLog.CreateManyAsync(logs.Where(log => log != null), cancellationToken).ConfigureAwait(false);
+				try
+				{
+					var stopwatch = Stopwatch.StartNew();
+					var data = input.Where(log => log != null && !string.IsNullOrWhiteSpace(log.CorrelationID)).ToList();
+					if (isDebugLogEnabled)
+						this.Logger.LogInformation($"Start flush {data.Count:###,###,##0} logs into database");
+					await ServiceLog.CreateManyAsync(data, cancellationToken).ConfigureAwait(false);
+					if (isDebugLogEnabled)
+						this.Logger.LogInformation($"Complete flush {data.Count:###,###,##0} logs into database in {stopwatch.GetElapsedTimes()}");
+				}
+				catch (Exception ex)
+				{
+					this.Logger.LogError($"Error occurred while flushing log into database => {ex.Message}", ex);
+				}
 			}
-			catch (Exception ex)
+
+			var tasks = new List<Task>();
+			var pageNumber = 0;
+			var pageSize = this.NumberOfLogItems > 1000 ? this.NumberOfLogItems / 5 : 500;
+			var totalPages = Extensions.GetTotalPages(logs.Count(), pageSize);
+			while (pageNumber < totalPages)
 			{
-				this.Logger.LogError($"Error occurred while flushing log into database => {ex.Message}", ex);
+				tasks.Add(flushLogsAsync(logs.Skip(pageNumber * pageSize).Take(pageSize)));
+				pageNumber++;
 			}
+			await Task.WhenAll(tasks).ConfigureAwait(false);
+
 			if (this.WriteServiceLogsIntoSeparatedFiles)
 				await logs.Where(log => log != null).ForEachAsync(async log =>
 				{
@@ -243,7 +273,7 @@ namespace net.vieapps.Services.Logs
 					{
 						var content = $"{log.Time:HH:mm:ss.ffffff}{(string.IsNullOrWhiteSpace(log.DeveloperID) ? "" : $" [Dev: {log.DeveloperID}]")}{(string.IsNullOrWhiteSpace(log.AppID) ? "" : $" [App: {log.AppID}]")} {log.Logs} [{log.CorrelationID}]{(string.IsNullOrWhiteSpace(log.Stack) ? "" : $"\r\n{log.Stack}")}\r\n";
 						var filename = $"{log.ServiceName}{(string.IsNullOrWhiteSpace(log.ObjectName) || log.ServiceName.IsEquals(log.ObjectName) ? "" : $".{log.ObjectName}")}-{log.Time:yyyyMMddHH}.txt";
-						await content.ToBytes().SaveAsTextAsync(Path.Combine(this.LogsPath, filename), cancellationToken, true).ConfigureAwait(false);
+						await content.SaveAsTextAsync(Path.Combine(this.LogsPath, filename), cancellationToken, true).ConfigureAwait(false);
 					}
 					catch (Exception ex)
 					{
