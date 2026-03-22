@@ -32,19 +32,23 @@ namespace net.vieapps.Services.Logs
 
 		int MaxTriedTimes { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:MaxTriedTimes"), out var numbers) && numbers > 0 ? numbers : 2;
 
-		int NumberOfLogItems { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:Numbers"), out var numbers) && numbers > 0 ? numbers : 2000;
+		int NumberOfLogItems { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:Numbers"), out var numbers) && numbers > 0 ? numbers : 5000;
 
 		int BatchSize { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:BatchSize"), out var numbers) && numbers > 0 ? numbers : 500;
 
 		bool UseInternalQueue { get; } = "true".IsEquals(UtilityService.GetAppSetting("Logs:Queue", "true"));
 
-		int InternalQueueInterval { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:Queue:Interval", "13"), out var interval) && interval > 0 ? interval : 13;
+		int InternalQueueInterval { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:Queue:Interval"), out var interval) && interval > 0 ? interval : 7;
 
-		Channel<IEnumerable<ServiceLog>> Logs { get; } = Channel.CreateBounded<IEnumerable<ServiceLog>>(new BoundedChannelOptions(Int32.TryParse(UtilityService.GetAppSetting("Logs:Queue:Size", "256"), out var size) && size > 0 ? size : 256)
+		static int InternalQueueSize { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:Queue:Size"), out var size) && size > 0 ? size : 256;
+
+		static BoundedChannelFullMode InternalQueueFullMode { get; } = Enum.TryParse<BoundedChannelFullMode>(UtilityService.GetAppSetting("Logs:Queue:Mode"), out var mode) ? mode : BoundedChannelFullMode.DropOldest;
+
+		Channel<IEnumerable<ServiceLog>> Logs { get; } = Channel.CreateBounded<IEnumerable<ServiceLog>>(new BoundedChannelOptions(InternalQueueSize)
 		{
 			SingleWriter = false,
 			SingleReader = true,
-			FullMode = BoundedChannelFullMode.Wait
+			FullMode = InternalQueueFullMode
 		});
 
 		Task Flusher { get; set; }
@@ -269,9 +273,10 @@ namespace net.vieapps.Services.Logs
 			try
 			{
 				var logs = await this.PrepareLogsAsync(null).ConfigureAwait(false);
-				if (await this.Logs.Writer.WaitToWriteAsync(this.CancellationToken).ConfigureAwait(false))
-					if (this.Logs.Writer.TryWrite(logs) && this.IsDebug)
-						this.Logger?.LogInformation($"Enqueue {logs.Count():###,###,##0} log items successful");
+				if (InternalQueueFullMode == BoundedChannelFullMode.Wait)
+					await this.Logs.Writer.WriteAsync(logs, this.CancellationToken).ConfigureAwait(false);
+				else
+					this.Logs.Writer.TryWrite(logs);
 			}
 			catch (OperationCanceledException) { }
 			catch (Exception ex)
