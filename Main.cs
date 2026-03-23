@@ -32,9 +32,7 @@ namespace net.vieapps.Services.Logs
 
 		int MaxTriedTimes { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:MaxTriedTimes"), out var numbers) && numbers > 0 ? numbers : 2;
 
-		int NumberOfLogItems { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:Numbers"), out var numbers) && numbers > 0 ? numbers : 5000;
-
-		int BatchSize { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:BatchSize"), out var numbers) && numbers > 0 ? numbers : 500;
+		int NumberOfLogItems { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:Numbers"), out var numbers) && numbers > 0 ? numbers : 2000;
 
 		bool UseInternalQueue { get; } = "true".IsEquals(UtilityService.GetAppSetting("Logs:Queue", "true"));
 
@@ -54,6 +52,8 @@ namespace net.vieapps.Services.Logs
 		Task Flusher { get; set; }
 
 		bool IsDebug { get; set; } = false;
+
+		bool IsPreparer { get; } = "true".IsEquals(UtilityService.GetAppSetting("Logs:Preparer", "true"));
 		#endregion
 
 		public override Task StartAsync(string[] args = null, bool initializeRepository = true, Action<IService> next = null)
@@ -67,6 +67,8 @@ namespace net.vieapps.Services.Logs
 				if (this.IsDebug)
 					this.Logger?.LogInformation($"Use internal queue [{this.InternalQueueInterval} second(s)]");
 			}
+			if (this.IsPreparer)
+				this.StartTimer(() => this.PrepareStoragesAsync(), 7 * 60);
 			return base.StartAsync(args, initializeRepository, next);
 		}
 
@@ -82,12 +84,11 @@ namespace net.vieapps.Services.Logs
 
 		public override void DoWork(string[] args = null)
 		{
-			var isDebugLogEnabled = this.IsDebug || args?.FirstOrDefault(arg => arg.IsStartsWith("/logs")) != null;
-
+			this.IsDebug = this.IsDebugLogEnabled || args?.FirstOrDefault(arg => arg.IsStartsWith("/logs")) != null;
 			var stopwatch = Stopwatch.StartNew();
 			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/flush")) != null)
 			{
-				if (isDebugLogEnabled)
+				if (this.IsDebug)
 					this.Logger.LogInformation("Start flush logs from files into database");
 
 				if (this.MaxTriedTimes > 1)
@@ -105,20 +106,30 @@ namespace net.vieapps.Services.Logs
 					this.FlushLogsAsync(args).Execute(true, ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex));
 
 				stopwatch.Stop();
-				if (isDebugLogEnabled)
+				if (this.IsDebug)
 					this.Logger.LogInformation($"Complete flush logs from files into database - Execution times: {stopwatch.GetElapsedTimes()}");
 			}
 
 			stopwatch.Restart();
 			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/clean")) != null)
 			{
-				if (isDebugLogEnabled)
+				if (this.IsDebug)
 					this.Logger.LogInformation("Start clean old logs from database");
-
 				this.CleanLogsAsync().Execute(true, ex => this.Logger.LogError($"Error occurred while cleaning logs => {ex.Message}", ex));
 				stopwatch.Stop();
-				if (isDebugLogEnabled)
+				if (this.IsDebug)
 					this.Logger.LogInformation($"Complete clean old logs from database - Execution times: {stopwatch.GetElapsedTimes()}");
+			}
+
+			stopwatch.Restart();
+			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/prepare")) != null || args?.FirstOrDefault(arg => arg.IsStartsWith("/storages")) != null)
+			{
+				if (this.IsDebug)
+					this.Logger.LogInformation("Start re-prepare storages of service-logs");
+				this.PrepareStoragesAsync(false, args?.FirstOrDefault(arg => arg.IsStartsWith("/dont-drop")) == null).Execute(true, ex => this.Logger.LogError($"Error occurred while preparing storages of service-logs => {ex.Message}", ex));
+				stopwatch.Stop();
+				if (this.IsDebug)
+					this.Logger.LogInformation($"Complete re-prepare storages of service-logs - Execution times: {stopwatch.GetElapsedTimes()}");
 			}
 		}
 
@@ -336,7 +347,7 @@ namespace net.vieapps.Services.Logs
 
 			var tasks = new List<Task>();
 			var pageNumber = 0;
-			var pageSize = this.NumberOfLogItems > 1000 ? this.NumberOfLogItems / 5 : this.BatchSize;
+			var pageSize = this.NumberOfLogItems > 10000 ? this.NumberOfLogItems / 5 : 2000;
 			var totalPages = Extensions.GetTotalPages(logs.Count(), pageSize);
 			while (pageNumber < totalPages)
 			{
@@ -397,6 +408,37 @@ namespace net.vieapps.Services.Logs
 				this.Logger.LogDebug($"Clean old service logs");
 			var filter = Filters<ServiceLog>.LessThan("Time", DateTime.Now.AddDays(0 - (Int32.TryParse(UtilityService.GetAppSetting("Logs:Days", "3"), out var days) && days > 0 ? days : 2)));
 			return ServiceLog.DeleteManyAsync(filter, null, this.CancellationToken);
+		}
+
+		async Task PrepareStoragesAsync(bool checkTime = true, bool dropCollection = true)
+		{
+			var entityDefinition = !checkTime || (DateTime.Now.DayOfWeek == DayOfWeek.Saturday && DateTime.Now.Hour == 23 && DateTime.Now.Minute > 45 && DateTime.Now.Minute < 57)
+				? RepositoryMediator.GetEntityDefinition<ServiceLog>()
+				: null;
+			var dataSource = entityDefinition?.GetPrimaryDataSource();
+			if (dataSource != null && dataSource.Mode == RepositoryMode.NoSQL)
+				try
+				{
+					if (dropCollection)
+					{
+						await dataSource.DropCollectionAsync<ServiceLog>(entityDefinition, this.CancellationToken).ConfigureAwait(false);
+						if (this.IsDebug)
+							this.Logger.LogInformation("Collection of service-logs was dropped successful");
+					}
+					await entityDefinition.EnsureIndexesAsync(dataSource, (msg, ex) =>
+					{
+						if (ex != null)
+							this.Logger.LogError(msg, ex);
+						else if (this.IsDebug)
+							this.Logger.LogInformation(msg);
+					}).ConfigureAwait(false);
+					if (this.IsDebug)
+						this.Logger.LogInformation("Collection of service-logs was re-prepared successful");
+				}
+				catch (Exception ex)
+				{
+					this.Logger.LogError($"Error occurred while preparing storages of service-logs => {ex.Message}", ex);
+				}
 		}
 	}
 

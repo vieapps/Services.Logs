@@ -31,7 +31,7 @@ namespace net.vieapps.Services.Logs
 		[Property(MaxLength = 50, NotNull = true), Sortable(IndexName = "Services")]
 		public new string ServiceName { get; set; }
 
-		[Property(MaxLength = 50)]
+		[Property(MaxLength = 50), Sortable(IndexName = "Services")]
 		public new string ObjectName { get; set; }
 
 		[Property(NotNull = true, IsCLOB = true)]
