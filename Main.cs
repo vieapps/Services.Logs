@@ -412,7 +412,7 @@ namespace net.vieapps.Services.Logs
 
 		async Task PrepareStoragesAsync(bool checkTime = true, bool dropCollection = true)
 		{
-			var entityDefinition = !checkTime || (DateTime.Now.DayOfWeek == DayOfWeek.Saturday && DateTime.Now.Hour == 23 && DateTime.Now.Minute > 45 && DateTime.Now.Minute < 57)
+			var entityDefinition = !checkTime || ((DateTime.Now.DayOfWeek == DayOfWeek.Wednesday || DateTime.Now.DayOfWeek == DayOfWeek.Saturday) && DateTime.Now.Hour == 23 && DateTime.Now.Minute > 45 && DateTime.Now.Minute < 57)
 				? RepositoryMediator.GetEntityDefinition<ServiceLog>()
 				: null;
 			var dataSource = entityDefinition?.GetPrimaryDataSource();
