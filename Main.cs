@@ -12,6 +12,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using net.vieapps.Components.Security;
 using net.vieapps.Components.Repository;
+using net.vieapps.Components.Caching;
 using net.vieapps.Components.Utility;
 #endregion
 
@@ -22,6 +23,8 @@ namespace net.vieapps.Services.Logs
 		public override string ServiceName => "Logs";
 
 		#region Properties
+		Cache Cache { get; } = Cache.CreateInstance("VIEApps-Services-Logs", Components.Utility.Logger.GetLoggerFactory(), "true".IsEquals(UtilityService.GetAppSetting("Logs:Cache:L1")));
+
 		string LogsPath { get; } = UtilityService.GetAppSetting("Path:Logs", "logs");
 
 		bool CleaningServiceLogs { get; set; } = false;
@@ -69,7 +72,7 @@ namespace net.vieapps.Services.Logs
 			}
 			if (this.IsPreparer)
 				this.StartTimer(() => this.PrepareStoragesAsync(), 7 * 60);
-			return base.StartAsync(args, initializeRepository, next);
+			return base.StartAsync(args, initializeRepository, this.Cache, next);
 		}
 
 		public override async Task StopAsync(string[] args = null, Action<IService> next = null)
