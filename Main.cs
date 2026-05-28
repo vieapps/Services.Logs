@@ -428,6 +428,23 @@ namespace net.vieapps.Services.Logs
 						if (this.IsDebug)
 							this.Logger.LogInformation("Collection of service-logs was dropped successful");
 					}
+					await this.EnsureIndexesAsync(entityDefinition, dataSource).ConfigureAwait(false);
+				}
+				catch (Exception ex)
+				{
+					this.Logger.LogError($"Error occurred while preparing storages of service-logs => {ex.Message}", ex);
+				}
+			else if (entityDefinition == null && DateTime.Now.Hour == 23 && DateTime.Now.Minute > 45 && DateTime.Now.Minute < 57)
+				await this.EnsureIndexesAsync().ConfigureAwait(false);
+		}
+
+		async Task EnsureIndexesAsync(EntityDefinition entityDefinition = null, DataSource dataSource = null)
+		{
+			entityDefinition ??= RepositoryMediator.GetEntityDefinition<ServiceLog>();
+			dataSource ??= entityDefinition?.GetPrimaryDataSource();
+			if (dataSource != null && dataSource.Mode == RepositoryMode.NoSQL)
+				try
+				{
 					await entityDefinition.EnsureIndexesAsync(dataSource, (msg, ex) =>
 					{
 						if (ex != null)
