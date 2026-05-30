@@ -155,7 +155,7 @@ namespace net.vieapps.Services.Logs
 								var pageNumber = pagination.Get("PageNumber", 1);
 								var pageSize = pagination.Get("PageSize", 100);
 								var filterBy = request.Get<ExpandoObject>("FilterBy");
-								return await this.FetchLogsAsync(pageNumber > 0 ? pageNumber : 1, pageSize > 0 ? pageSize : 100, filterBy.Get<string>("CorrelationID"), filterBy.Get<string>("DeveloperID"), filterBy.Get<string>("AppID"), filterBy.Get<string>("ServiceName"), filterBy.Get<string>("ObjectName"), cts.Token).ConfigureAwait(false);
+								return await this.FetchLogsAsync(pageNumber > 0 ? pageNumber : 1, pageSize > 0 ? pageSize : 100, filterBy.Get<string>("CorrelationID"), filterBy.Get<string>("ServiceName"), filterBy.Get<string>("ObjectName"), filterBy.Get<string>("StartTime"), filterBy.Get<string>("EndTime"), cts.Token).ConfigureAwait(false);
 							}
 							else if (requestInfo.Verb.IsEquals("POST"))
 							{
@@ -376,19 +376,19 @@ namespace net.vieapps.Services.Logs
 				}, true, false).ConfigureAwait(false);
 		}
 
-		async Task<JToken> FetchLogsAsync(int pageNumber, int pageSize, string correlationID, string developerID, string appID, string serviceName, string objectName, CancellationToken cancellationToken)
+		async Task<JToken> FetchLogsAsync(int pageNumber, int pageSize, string correlationID, string serviceName, string objectName, string startTime, string endTime, CancellationToken cancellationToken)
 		{
 			var filter = Filters<ServiceLog>.And();
 			if (!string.IsNullOrWhiteSpace(correlationID))
 				filter.Add(Filters<ServiceLog>.Equals("CorrelationID", correlationID.Trim().ToLower()));
-			if (!string.IsNullOrWhiteSpace(developerID))
-				filter.Add(Filters<ServiceLog>.Equals("DeveloperID", developerID.Trim().ToLower()));
-			if (!string.IsNullOrWhiteSpace(appID))
-				filter.Add(Filters<ServiceLog>.Equals("AppID", appID.Trim().ToLower()));
 			if (!string.IsNullOrWhiteSpace(serviceName))
 				filter.Add(Filters<ServiceLog>.Equals("ServiceName", serviceName.Trim().ToLower()));
 			if (!string.IsNullOrWhiteSpace(objectName))
 				filter.Add(Filters<ServiceLog>.Equals("ObjectName", objectName.Trim().ToLower()));
+			if (DateTime.TryParse(startTime, out var start))
+				filter.Add(Filters<ServiceLog>.GreaterOrEquals("Time", start));
+			if (DateTime.TryParse(endTime, out var end))
+				filter.Add(Filters<ServiceLog>.LessThanOrEquals("Time", end));
 
 			var totalRecords = await ServiceLog.CountAsync(filter, null, false, null, 0, cancellationToken).ConfigureAwait(false);
 			var totalPages = (totalRecords, pageSize).GetTotalPages();
