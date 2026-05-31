@@ -157,7 +157,7 @@ namespace net.vieapps.Services.Logs
 								var filterBy = request.Get<ExpandoObject>("FilterBy");
 								return await this.FetchLogsAsync(pageNumber > 0 ? pageNumber : 1, pageSize > 0 ? pageSize : 100, filterBy.Get<string>("CorrelationID"), filterBy.Get<string>("ServiceName"), filterBy.Get<string>("ObjectName"), filterBy.Get<string>("StartTime"), filterBy.Get<string>("EndTime"), cts.Token).ConfigureAwait(false);
 							}
-							else if (requestInfo.Verb.IsEquals("POST"))
+							else if (requestInfo.Verb.IsEquals("POST") && requestInfo.IsAuthenticated())
 							{
 								await this.WriteLogAsync(requestInfo.BodyAsJson.As<ServiceLog>(false, (log, _) =>
 								{
