@@ -138,46 +138,52 @@ namespace net.vieapps.Services.Logs
 
 		public override async Task<JToken> ProcessRequestAsync(RequestInfo requestInfo, CancellationToken cancellationToken = default)
 		{
-			using (var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, this.CancellationToken))
-				try
+			var stopwatch = Stopwatch.StartNew();
+			this.Statistics.RpcEntered();
+			using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, this.CancellationToken);
+			try
+			{
+				switch (requestInfo.ObjectName.ToLower())
 				{
-					switch (requestInfo.ObjectName.ToLower())
-					{
-						case "service":
-						case "servicelog":
-						case "servicelogs":
-						case "service.log":
-						case "service.logs":
-							if (requestInfo.Verb.IsEquals("GET"))
+					case "service":
+					case "servicelog":
+					case "servicelogs":
+					case "service.log":
+					case "service.logs":
+						if (requestInfo.Verb.IsEquals("GET"))
+						{
+							var request = requestInfo.GetRequestExpando();
+							var pagination = request.Get<ExpandoObject>("Pagination");
+							var pageNumber = pagination.Get("PageNumber", 1);
+							var pageSize = pagination.Get("PageSize", 100);
+							var filterBy = request.Get<ExpandoObject>("FilterBy");
+							return await this.FetchLogsAsync(pageNumber > 0 ? pageNumber : 1, pageSize > 0 ? pageSize : 100, filterBy.Get<string>("CorrelationID"), filterBy.Get<string>("ServiceName"), filterBy.Get<string>("ObjectName"), filterBy.Get<string>("StartTime"), filterBy.Get<string>("EndTime"), cts.Token).ConfigureAwait(false);
+						}
+						else if (requestInfo.Verb.IsEquals("POST") && requestInfo.IsAuthenticated())
+						{
+							await this.WriteLogAsync(requestInfo.BodyAsJson.As<ServiceLog>(false, (log, _) =>
 							{
-								var request = requestInfo.GetRequestExpando();
-								var pagination = request.Get<ExpandoObject>("Pagination");
-								var pageNumber = pagination.Get("PageNumber", 1);
-								var pageSize = pagination.Get("PageSize", 100);
-								var filterBy = request.Get<ExpandoObject>("FilterBy");
-								return await this.FetchLogsAsync(pageNumber > 0 ? pageNumber : 1, pageSize > 0 ? pageSize : 100, filterBy.Get<string>("CorrelationID"), filterBy.Get<string>("ServiceName"), filterBy.Get<string>("ObjectName"), filterBy.Get<string>("StartTime"), filterBy.Get<string>("EndTime"), cts.Token).ConfigureAwait(false);
-							}
-							else if (requestInfo.Verb.IsEquals("POST") && requestInfo.IsAuthenticated())
-							{
-								await this.WriteLogAsync(requestInfo.BodyAsJson.As<ServiceLog>(false, (log, _) =>
-								{
-									log.ID = string.IsNullOrWhiteSpace(log.ID) ? UtilityService.NewUUID : log.ID;
-									log.ServiceName = log.ServiceName?.ToLower();
-									log.ObjectName = log.ObjectName?.ToLower();
-								}), cts.Token).ConfigureAwait(false);
-								return new JObject();
-							}
-							else
-								throw new InvalidRequestException($"The request is invalid [({requestInfo.Verb}): {requestInfo.GetURI()}]");
-
-						default:
+								log.ID = string.IsNullOrWhiteSpace(log.ID) ? UtilityService.NewUUID : log.ID;
+								log.ServiceName = log.ServiceName?.ToLower();
+								log.ObjectName = log.ObjectName?.ToLower();
+							}), cts.Token).ConfigureAwait(false);
+							return new JObject();
+						}
+						else
 							throw new InvalidRequestException($"The request is invalid [({requestInfo.Verb}): {requestInfo.GetURI()}]");
-					}
+
+					default:
+						throw new InvalidRequestException($"The request is invalid [({requestInfo.Verb}): {requestInfo.GetURI()}]");
 				}
-				catch (Exception ex)
-				{
-					throw this.GetRuntimeException(requestInfo, ex);
-				}
+			}
+			catch (Exception ex)
+			{
+				throw this.GetRuntimeException(requestInfo, ex);
+			}
+			finally
+			{
+				this.Statistics.RpcCompleted(stopwatch);
+			}
 		}
 
 		protected override async Task ProcessInterCommunicateMessageAsync(CommunicateMessage message, CancellationToken cancellationToken = default)
