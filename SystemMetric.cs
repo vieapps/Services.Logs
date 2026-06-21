@@ -721,10 +721,10 @@ namespace net.vieapps.Services.Logs
 			return json;
 		}
 
-		static string[] NotAvailableInAPIGateway { get; } = new[] { "Cache.L1", "Cache.L2" };
+		static string[] NotAvailableInAPIGateway { get; } = ["Cache.L1", "Cache.L2"];
 
-		static string[] NotAvailableInDownstream { get; } = new[] { "Request", "RpcSlot", "RpcCall.Rejected" };
+		static string[] NotAvailableInDownstream { get; } = ["Request", "RpcSlot", "RpcCall.Rejected"];
 
-		static string[] NotAvailableInSample { get; } = new[] { "ServiceName", "NodeID", "Cpu", "Memory", "Cache.Provider", "Cache.Status", "Cache.L1.Hit304", "Cache.L1.Hit200", "Cache.L1.Miss", "Cache.L1.Bypass", "Cache.L2.Hit304", "Cache.L2.Hit200", "Cache.L2.Miss", "Cache.L2.Bypass", "Request.Total", "RpcSlot.Max", "RpcCall.Completion.TotalRatio", "RpcCall.Rejected.Total", "RpcCall.Rejected.TotalRate", "RpcCall.Entered.Total", "RpcCall.Entered.TotalRate", "RpcCall.Completed.Total", "RpcCall.Completed.TotalRate", "RpcCall.Latency.AverageTotal", "RpcCall.Latency.MaxTotal" };
+		static string[] NotAvailableInSample { get; } = ["ServiceName", "NodeID", "Cpu", "Memory", "Cache.Provider", "Cache.Status", "Cache.L1.Hit304", "Cache.L1.Hit200", "Cache.L1.Miss", "Cache.L1.Bypass", "Cache.L2.Hit304", "Cache.L2.Hit200", "Cache.L2.Miss", "Cache.L2.Bypass", "Request.Total", "RpcSlot.Max", "RpcCall.Completion.TotalRatio", "RpcCall.Rejected.Total", "RpcCall.Rejected.TotalRate", "RpcCall.Entered.Total", "RpcCall.Entered.TotalRate", "RpcCall.Completed.Total", "RpcCall.Completed.TotalRate", "RpcCall.Latency.AverageTotal", "RpcCall.Latency.MaxTotal"];
 	}
 }
