@@ -27,6 +27,8 @@ namespace net.vieapps.Services.Logs
 
 		string LogsPath { get; } = UtilityService.GetAppSetting("Path:Logs", "logs");
 
+		bool IsDebug { get; set; } = false;
+
 		bool CleaningServiceLogs { get; set; } = false;
 
 		bool FlushingServiceLogs { get; set; } = false;
@@ -54,15 +56,28 @@ namespace net.vieapps.Services.Logs
 
 		Task Flusher { get; set; }
 
-		bool IsDebug { get; set; } = false;
+		bool IsPreparer { get; } = "true".IsEquals(UtilityService.GetAppSetting("Logs:Preparer"));
 
-		bool IsPreparer { get; } = "true".IsEquals(UtilityService.GetAppSetting("Logs:Preparer", "true"));
+		bool IsCollector { get; } = "true".IsEquals(UtilityService.GetAppSetting("Logs:Collector"));
+
+		bool IsServiceStatisticsSampleEnabled { get; } = "true".IsEquals(UtilityService.GetAppSetting("Logs:Statistics:Samples"));
+
+		Channel<StatisticMessage> ServiceStatistics { get; set; }
+
+		Channel<(DateTime Time, double CpuUsage, double MemoryUsage)> RouterStatistics { get; set; }
+
+		((double Min, double Max, double Average) CpuUsage, (double Min, double Max, double Average) MemoryUsage) RouterStats { get; set; } = ((Min: 0.0, Max: 0.0, Average: 0.0), (Min: 0.0, Max: 0.0, Average: 0.0));
+
+		(int Total, int User, int Visitor, int Crawler) Sessions { get; set; } = (Total: 0, User: 0, Visitor: 0, Crawler: 0);
 		#endregion
 
+		#region Start/Stop
 		public override Task StartAsync(string[] args = null, bool initializeRepository = true, Action<IService> next = null)
 		{
 			this.Syncable = false;
 			this.IsDebug = this.IsDebugLogEnabled || args?.FirstOrDefault(arg => arg.IsStartsWith("/logs")) != null;
+
+			// use log internal queue
 			if (this.UseInternalQueue)
 			{
 				this.Flusher = Task.Run(this.FlushLogsAsync);
@@ -70,8 +85,37 @@ namespace net.vieapps.Services.Logs
 				if (this.IsDebug)
 					this.Logger?.LogInformation($"Use internal queue [{this.InternalQueueInterval} second(s)]");
 			}
+
+			// as log preparer
 			if (this.IsPreparer)
-				this.StartTimer(() => this.PrepareStoragesAsync(), 7 * 60);
+				this.StartTimer(() => this.PrepareLogStoragesAsync(), 7 * 60);
+
+			// as system metric collector
+			if (this.IsCollector)
+			{
+				this.ServiceStatistics = Channel.CreateBounded<StatisticMessage>(new BoundedChannelOptions(1024 * 60)
+				{
+					SingleWriter = false,
+					SingleReader = true,
+					FullMode = BoundedChannelFullMode.DropOldest
+				});
+
+				this.RouterStatistics = Channel.CreateBounded<(DateTime Time, double CpuUsage, double MemoryUsage)>(new BoundedChannelOptions(256)
+				{
+					SingleWriter = false,
+					SingleReader = true,
+					FullMode = BoundedChannelFullMode.DropOldest
+				});
+
+				Router.OnRouterWebSocketMessageReceived = (_, message) => this.UpdateRouterStatistics(message);
+				this.StartTimer(this.GetRouterStatisticsAsync, 1);
+
+				var now = DateTime.Now;
+				var time = now.AddMinutes(1);
+				var delayMilliseconds = (int)(new DateTime(time.Year, time.Month, time.Day, time.Hour, time.Minute, 1) - now).TotalMilliseconds;
+				this.StartTimer(this.ProcessServiceStatisticsAsync, 60, delayMilliseconds);
+			}
+
 			return base.StartAsync(args, initializeRepository, this.Cache, next);
 		}
 
@@ -82,59 +126,16 @@ namespace net.vieapps.Services.Logs
 				this.Logs.Writer.TryComplete();
 				await this.Flusher.ConfigureAwait(false);
 			}
+
+			if (this.IsCollector)
+			{
+				this.ServiceStatistics.Writer?.TryComplete();
+				this.RouterStatistics.Writer?.TryComplete();
+			}
+
 			await base.StopAsync(args, next).ConfigureAwait(false);
 		}
-
-		public override void DoWork(string[] args = null)
-		{
-			this.IsDebug = this.IsDebugLogEnabled || args?.FirstOrDefault(arg => arg.IsStartsWith("/logs")) != null;
-			var stopwatch = Stopwatch.StartNew();
-			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/flush")) != null)
-			{
-				if (this.IsDebug)
-					this.Logger.LogInformation("Start flush logs from files into database");
-
-				if (this.MaxTriedTimes > 1)
-				{
-					var triedTimes = 0;
-					this.FlushLogsAsync((args ?? []).Concat(["/order-mode:Descending"])).Execute(true, ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex));
-					triedTimes++;
-					while (triedTimes < this.MaxTriedTimes)
-					{
-						this.FlushLogsAsync(args).Execute(true, ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex));
-						triedTimes++;
-					}
-				}
-				else
-					this.FlushLogsAsync(args).Execute(true, ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex));
-
-				stopwatch.Stop();
-				if (this.IsDebug)
-					this.Logger.LogInformation($"Complete flush logs from files into database - Execution times: {stopwatch.GetElapsedTimes()}");
-			}
-
-			stopwatch.Restart();
-			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/clean")) != null)
-			{
-				if (this.IsDebug)
-					this.Logger.LogInformation("Start clean old logs from database");
-				this.CleanLogsAsync().Execute(true, ex => this.Logger.LogError($"Error occurred while cleaning logs => {ex.Message}", ex));
-				stopwatch.Stop();
-				if (this.IsDebug)
-					this.Logger.LogInformation($"Complete clean old logs from database - Execution times: {stopwatch.GetElapsedTimes()}");
-			}
-
-			stopwatch.Restart();
-			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/prepare")) != null || args?.FirstOrDefault(arg => arg.IsStartsWith("/storages")) != null)
-			{
-				if (this.IsDebug)
-					this.Logger.LogInformation("Start re-prepare storages of service-logs");
-				this.PrepareStoragesAsync(false, args?.FirstOrDefault(arg => arg.IsStartsWith("/dont-drop")) == null).Execute(true, ex => this.Logger.LogError($"Error occurred while preparing storages of service-logs => {ex.Message}", ex));
-				stopwatch.Stop();
-				if (this.IsDebug)
-					this.Logger.LogInformation($"Complete re-prepare storages of service-logs - Execution times: {stopwatch.GetElapsedTimes()}");
-			}
-		}
+		#endregion
 
 		public override async Task<JToken> ProcessRequestAsync(RequestInfo requestInfo, CancellationToken cancellationToken = default)
 		{
@@ -186,9 +187,103 @@ namespace net.vieapps.Services.Logs
 			}
 		}
 
+		#region Do sync-work
+		public override void DoWork(string[] args = null)
+		{
+			this.IsDebug = this.IsDebugLogEnabled || args?.FirstOrDefault(arg => arg.IsStartsWith("/logs")) != null;
+			var stopwatch = Stopwatch.StartNew();
+			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/flush")) != null)
+			{
+				if (this.IsDebug)
+					this.Logger.LogInformation("Start flush logs from files into database");
+
+				if (this.MaxTriedTimes > 1)
+				{
+					var triedTimes = 0;
+					this.FlushLogsAsync((args ?? []).Concat(["/order-mode:Descending"])).Execute(true, ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex));
+					triedTimes++;
+					while (triedTimes < this.MaxTriedTimes)
+					{
+						this.FlushLogsAsync(args).Execute(true, ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex));
+						triedTimes++;
+					}
+				}
+				else
+					this.FlushLogsAsync(args).Execute(true, ex => this.Logger.LogError($"Error occurred while flushing logs => {ex.Message}", ex));
+
+				stopwatch.Stop();
+				if (this.IsDebug)
+					this.Logger.LogInformation($"Complete flush logs from files into database - Execution times: {stopwatch.GetElapsedTimes()}");
+			}
+
+			stopwatch.Restart();
+			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/clean")) != null)
+			{
+				if (this.IsDebug)
+					this.Logger.LogInformation("Start clean old logs from database");
+				this.CleanLogsAsync().Execute(true, ex => this.Logger.LogError($"Error occurred while cleaning logs => {ex.Message}", ex));
+				stopwatch.Stop();
+				if (this.IsDebug)
+					this.Logger.LogInformation($"Complete clean old logs from database - Execution times: {stopwatch.GetElapsedTimes()}");
+			}
+
+			stopwatch.Restart();
+			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/prepare")) != null || args?.FirstOrDefault(arg => arg.IsStartsWith("/storages")) != null)
+			{
+				if (this.IsDebug)
+					this.Logger.LogInformation("Start re-prepare storages of service-logs");
+				this.PrepareLogStoragesAsync(false, args?.FirstOrDefault(arg => arg.IsStartsWith("/dont-drop")) == null).Execute(true, ex => this.Logger.LogError($"Error occurred while preparing storages of service-logs => {ex.Message}", ex));
+				this.EnsureIndexesAsync(RepositoryMediator.GetEntityDefinition<SystemMetric>()).Execute(true, ex => this.Logger.LogError($"Error occurred while preparing system metrics => {ex.Message}", ex));
+				stopwatch.Stop();
+				if (this.IsDebug)
+					this.Logger.LogInformation($"Complete re-prepare storages of service-logs - Execution times: {stopwatch.GetElapsedTimes()}");
+			}
+
+			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/rpc-gate-max")) != null || args?.FirstOrDefault(arg => arg.IsStartsWith("/change-rpc-gate")) != null)
+			{
+				var serviceName = args?.FirstOrDefault(arg => arg.IsStartsWith("/service:"))?.Replace("/service:", "", StringComparison.OrdinalIgnoreCase);
+				var nodeID = args?.FirstOrDefault(arg => arg.IsStartsWith("/node:"))?.Replace("/node:", "", StringComparison.OrdinalIgnoreCase);
+				var max = args?.FirstOrDefault(arg => arg.IsStartsWith("/max:"))?.Replace("/max:", "", StringComparison.OrdinalIgnoreCase);
+				this.SendInterCommunicateMessage(new CommunicateMessage("APIGateway")
+				{
+					Type = "RpcGate#Max",
+					Data = new JObject
+					{
+						["Service"] = serviceName,
+						["NodeID"] = nodeID,
+						["MaxCapacity"] = Int32.TryParse(max, out var maxCapacity) && maxCapacity > -1 && maxCapacity <= 20000 ? maxCapacity : 0
+					}
+				}, false, this.IsDebug);
+			}
+		}
+		#endregion
+
+		async Task EnsureIndexesAsync(EntityDefinition entityDefinition)
+		{
+			var dataSource = entityDefinition?.GetPrimaryDataSource();
+			if (dataSource != null && dataSource.Mode == RepositoryMode.NoSQL)
+				try
+				{
+					await entityDefinition.EnsureIndexesAsync(dataSource, (msg, ex) =>
+					{
+						if (ex != null)
+							this.Logger.LogError(msg, ex);
+						else if (this.IsDebug)
+							this.Logger.LogInformation(msg);
+					}).ConfigureAwait(false);
+					if (this.IsDebug)
+						this.Logger.LogInformation($"Indexes of the collection '{entityDefinition.CollectionName}' was re-prepared successful");
+				}
+				catch (Exception ex)
+				{
+					this.Logger.LogError($"Error occurred while preparing indexes of '{entityDefinition.CollectionName}' => {ex.Message}", ex);
+				}
+		}
+
+		#region Process inter-communicate messages
 		protected override async Task ProcessInterCommunicateMessageAsync(CommunicateMessage message, CancellationToken cancellationToken = default)
 		{
-			if (message.Type.IsEquals("Clean") && !this.CleaningServiceLogs)
+			if (message.Type.IsEquals("ServiceLog#Clean") && !this.CleaningServiceLogs)
 				try
 				{
 					this.CleaningServiceLogs = true;
@@ -203,23 +298,33 @@ namespace net.vieapps.Services.Logs
 					this.CleaningServiceLogs = false;
 				}
 
-			else if (message.Type.IsEquals("Flush"))
-				if (!this.FlushingServiceLogs)
-					try
-					{
-						this.FlushingServiceLogs = true;
-						await this.FlushLogsAsync(null).ConfigureAwait(false);
-					}
-					catch (Exception ex)
-					{
-						this.Logger.LogError($"Error occurred while flushing service logs => {ex.Message}", ex);
-					}
-					finally
-					{
-						this.FlushingServiceLogs = false;
-					}
+			else if (message.Type.IsEquals("ServiceLog#Flush") && !this.FlushingServiceLogs)
+				try
+				{
+					this.FlushingServiceLogs = true;
+					await this.FlushLogsAsync(null).ConfigureAwait(false);
+				}
+				catch (Exception ex)
+				{
+					this.Logger.LogError($"Error occurred while flushing service logs => {ex.Message}", ex);
+				}
+				finally
+				{
+					this.FlushingServiceLogs = false;
+				}
 		}
 
+		protected override async Task ProcessGatewayCommunicateMessageAsync(CommunicateMessage message, CancellationToken cancellationToken = default)
+		{
+			if (message.Type.IsEquals("Service#Statistics") && this.IsCollector)
+				await this.UpdateServiceStatisticsAsync(message).ConfigureAwait(false);
+
+			else if (message.Type.IsEquals("Session#Statistics") && this.IsCollector)
+				this.Sessions = (message.Data.Get("Total", 0), message.Data.Get("User", 0), message.Data.Get("Visitor", 0), message.Data.Get("Crawler", 0));
+		}
+		#endregion
+
+		#region Working with service logs
 		Task WriteLogAsync(ServiceLog log, CancellationToken cancellationToken)
 			=> this.WriteLogsAsync([log], cancellationToken);
 
@@ -419,7 +524,7 @@ namespace net.vieapps.Services.Logs
 			return ServiceLog.DeleteManyAsync(filter, null, this.CancellationToken);
 		}
 
-		async Task PrepareStoragesAsync(bool checkTime = true, bool dropCollection = true)
+		async Task PrepareLogStoragesAsync(bool checkTime = true, bool dropCollection = true)
 		{
 			var entityDefinition = !checkTime || ((DateTime.Now.DayOfWeek == DayOfWeek.Wednesday || DateTime.Now.DayOfWeek == DayOfWeek.Saturday) && DateTime.Now.Hour == 23 && DateTime.Now.Minute > 45 && DateTime.Now.Minute < 57)
 				? RepositoryMediator.GetEntityDefinition<ServiceLog>()
@@ -434,38 +539,126 @@ namespace net.vieapps.Services.Logs
 						if (this.IsDebug)
 							this.Logger.LogInformation("Collection of service-logs was dropped successful");
 					}
-					await this.EnsureIndexesAsync(entityDefinition, dataSource).ConfigureAwait(false);
+					await this.EnsureIndexesAsync(entityDefinition).ConfigureAwait(false);
 				}
 				catch (Exception ex)
 				{
 					this.Logger.LogError($"Error occurred while preparing storages of service-logs => {ex.Message}", ex);
 				}
 			else if (entityDefinition == null && DateTime.Now.Hour == 23 && DateTime.Now.Minute > 45 && DateTime.Now.Minute < 57)
-				await this.EnsureIndexesAsync().ConfigureAwait(false);
+				await this.EnsureIndexesAsync(RepositoryMediator.GetEntityDefinition<ServiceLog>()).ConfigureAwait(false);
+		}
+		#endregion
+
+		#region Working with metrics (system statistics)
+		async ValueTask UpdateServiceStatisticsAsync(CommunicateMessage message)
+		{
+			if (this.ServiceStatistics?.Writer != null)
+				await this.ServiceStatistics.Writer.WriteAsync(new StatisticMessage(message.Data, DateTime.Now), this.CancellationToken).ConfigureAwait(false);
 		}
 
-		async Task EnsureIndexesAsync(EntityDefinition entityDefinition = null, DataSource dataSource = null)
+		async Task ProcessServiceStatisticsAsync()
 		{
-			entityDefinition ??= RepositoryMediator.GetEntityDefinition<ServiceLog>();
-			dataSource ??= entityDefinition?.GetPrimaryDataSource();
-			if (dataSource != null && dataSource.Mode == RepositoryMode.NoSQL)
-				try
+			var time = DateTime.Now.AddMinutes(-1);
+			time = new DateTime(time.Year, time.Month, time.Day, time.Hour, time.Minute, 0);
+			this.PrepareRouterStatistics(time);
+
+			var (forAggregate, forReUpdate) = this.ServiceStatistics.GetMessages(time);
+			var statistics = forAggregate.Any() ? forAggregate.Aggregate(time, this.IsServiceStatisticsSampleEnabled, json =>
+			{
+				var router = json.Get<JObject>("Router");
+				if (router != null)
 				{
-					await entityDefinition.EnsureIndexesAsync(dataSource, (msg, ex) =>
+					router["CPU"] = new JObject
 					{
-						if (ex != null)
-							this.Logger.LogError(msg, ex);
-						else if (this.IsDebug)
-							this.Logger.LogInformation(msg);
-					}).ConfigureAwait(false);
-					if (this.IsDebug)
-						this.Logger.LogInformation("Collection of service-logs was re-prepared successful");
+						["Min"] = Math.Round(this.RouterStats.CpuUsage.Min, 2),
+						["Max"] = Math.Round(this.RouterStats.CpuUsage.Max, 2),
+						["Average"] = Math.Round(this.RouterStats.CpuUsage.Average, 2)
+					};
+					router["Memory"] = new JObject
+					{
+						["Min"] = Math.Round(this.RouterStats.MemoryUsage.Min, 2),
+						["Max"] = Math.Round(this.RouterStats.MemoryUsage.Max, 2),
+						["Average"] = Math.Round(this.RouterStats.MemoryUsage.Average, 2)
+					};
 				}
-				catch (Exception ex)
+				json["Sessions"] = new JObject
 				{
-					this.Logger.LogError($"Error occurred while preparing storages of service-logs => {ex.Message}", ex);
-				}
+					["Total"] = this.Sessions.Total,
+					["User"] = this.Sessions.User,
+					["Visitor"] = this.Sessions.Visitor,
+					["Crawler"] = this.Sessions.Crawler
+				};
+			}) : null;
+
+			if (statistics != null)
+			{
+				new UpdateMessage
+				{
+					Type = "System#Statistics",
+					DeviceID = "*",
+					Data = statistics
+				}.Send();
+
+				new CommunicateMessage("APIGateway")
+				{
+					Type = "System#Statistics",
+					Data = statistics
+				}.Send();
+
+				SystemMetric.CreateAsync(new SystemMetric(time, statistics.Remove(["Time"]).AsString()), this.CancellationToken).Execute(ex => this.Logger.LogError($"Error occurred while update metrics => {ex.Message}", ex));
+			}
+
+			await forReUpdate.ForEachAsync(async message => await this.ServiceStatistics.Writer.WriteAsync(message, this.CancellationToken).ConfigureAwait(false), true, false).ConfigureAwait(false);
 		}
+
+		void PrepareRouterStatistics(DateTime time)
+		{
+			var forReUpdate = new List<(DateTime Time, double CpuUsage, double MemoryUsage)>();
+			var forAggregate = new List<(DateTime Time, double CpuUsage, double MemoryUsage)>();
+			while (this.RouterStatistics.Reader.TryRead(out var info))
+			{
+				if (info.Time.Hour == time.Hour && info.Time.Minute == time.Minute)
+					forAggregate.Add(info);
+				else if (info.Time > time)
+					forReUpdate.Add(info);
+			}
+
+			double cpuMin = 0, cpuMax = 0, cpuAverage = 0;
+			double memoryMin = 0, memoryMax = 0, memoryAverage = 0;
+
+			if (forAggregate.Count > 0)
+			{
+				cpuMin = forAggregate.Min(info => info.CpuUsage);
+				cpuMax = forAggregate.Max(info => info.CpuUsage);
+				cpuAverage = forAggregate.Average(info => info.CpuUsage);
+
+				memoryMin = forAggregate.Min(info => info.MemoryUsage);
+				memoryMax = forAggregate.Max(info => info.MemoryUsage);
+				memoryAverage = forAggregate.Average(info => info.MemoryUsage);
+			}
+
+			this.RouterStats = ((Min: cpuMin, Max: cpuMax, Average: cpuAverage), (Min: memoryMin, Max: memoryMax, Average: memoryAverage));
+			forReUpdate.ForEach(info => this.RouterStatistics.Writer.TryWrite(info));
+		}
+
+		Task GetRouterStatisticsAsync()
+			=> Router.SendMessageToRouterAsync(new JObject
+			{
+				["Command"] = "EnvironmentInfo"
+			}.AsString());
+
+		void UpdateRouterStatistics(string message)
+		{
+			var json = message.ToJson();
+			var timeStr = json.Value<string>("Time");
+			var cpuUsage = json.Value<object>("CpuUsage");
+			var memoryUsage = json.Value<object>("MemoryUsage");
+			if (timeStr != null && DateTime.TryParse(timeStr, out var time) && cpuUsage != null && memoryUsage != null)
+				this.RouterStatistics.Writer.TryWrite((Time: time, CpuUsage: cpuUsage.As<double>(), MemoryUsage: memoryUsage.As<double>()));
+		}
+		#endregion
+
 	}
 
 	[Repository]
