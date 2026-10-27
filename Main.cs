@@ -7,8 +7,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Channels;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Diagnostics;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using net.vieapps.Components.Security;
 using net.vieapps.Components.Repository;
@@ -74,6 +74,17 @@ namespace net.vieapps.Services.Logs
 
 		Task UsageLogsFlusher { get; set; }
 
+		Channel<(AuditLog Log, string FilePath)> AuditLogs { get; } = Channel.CreateBounded<(AuditLog Log, string FilePath)>(new BoundedChannelOptions(QueueSize)
+		{
+			SingleWriter = false,
+			SingleReader = true,
+			FullMode = BoundedChannelFullMode.Wait
+		});
+
+		Task AuditLogsFlusher { get; set; }
+
+		ConcurrentDictionary<string, byte> PendingAuditFiles { get; } = new(StringComparer.OrdinalIgnoreCase);
+
 		bool IsPreparer { get; } = "true".IsEquals(UtilityService.GetAppSetting("Logs:Preparer"));
 
 		bool IsCollector { get; } = "true".IsEquals(UtilityService.GetAppSetting("Logs:Collector"));
@@ -104,6 +115,9 @@ namespace net.vieapps.Services.Logs
 
 			this.UsageLogsFlusher = Task.Run(this.FlushUsageLogsAsync);
 			this.StartTimer(this.PrepareUsageLogsAsync, this.QueueInterval);
+
+			this.AuditLogsFlusher = Task.Run(this.FlushAuditLogsAsync);
+			this.StartTimer(this.PrepareAuditLogsAsync, this.QueueInterval);
 
 			// as log preparer
 			if (this.IsPreparer)
@@ -148,6 +162,9 @@ namespace net.vieapps.Services.Logs
 
 			this.UsageLogs.Writer.TryComplete();
 			await this.UsageLogsFlusher.ConfigureAwait(false);
+
+			this.AuditLogs.Writer.TryComplete();
+			await this.AuditLogsFlusher.ConfigureAwait(false);
 
 			if (this.IsCollector)
 			{
@@ -213,6 +230,22 @@ namespace net.vieapps.Services.Logs
 							var pageSize = pagination.Get("PageSize", 100);
 							var filterBy = request.Get<ExpandoObject>("FilterBy");
 							return await this.FetchUsageLogsAsync(pageNumber > 0 ? pageNumber : 1, pageSize > 0 ? pageSize : 100,	filterBy.Get<string>("CorrelationID"), filterBy.Get<string>("TraceID"), filterBy.Get<string>("ServiceName"), filterBy.Get<string>("Operation"), filterBy.Get<string>("Type"), filterBy.Get<string>("Provider"), filterBy.Get<string>("Model"), filterBy.Get<string>("SystemID"), filterBy.Get<string>("UserID"), filterBy.Get<string>("StartTime"), filterBy.Get<string>("EndTime"), cts.Token).ConfigureAwait(false);
+						}
+						throw new InvalidRequestException($"The request is invalid [({requestInfo.Verb}): {requestInfo.GetURI()}]");
+
+					case "audit":
+					case "auditlog":
+					case "auditlogs":
+					case "audit.log":
+					case "audit.logs":
+						if (requestInfo.Verb.IsEquals("GET"))
+						{
+							var request = requestInfo.GetRequestExpando();
+							var pagination = request.Get<ExpandoObject>("Pagination");
+							var pageNumber = pagination.Get("PageNumber", 1);
+							var pageSize = pagination.Get("PageSize", 100);
+							var filterBy = request.Get<ExpandoObject>("FilterBy");
+							return await this.FetchAuditLogsAsync(pageNumber > 0 ? pageNumber : 1, pageSize > 0 ? Math.Min(pageSize, 1000) : 100, filterBy.Get<string>("CorrelationID"), filterBy.Get<string>("TraceID"), filterBy.Get<string>("ActorType"), filterBy.Get<string>("ActorID"), filterBy.Get<string>("ServiceName"), filterBy.Get<string>("ObjectName"), filterBy.Get<string>("ObjectID"), filterBy.Get<string>("SystemID"), filterBy.Get<string>("Operation"), filterBy.Get<string>("Status"), filterBy.Get<string>("StartTime"), filterBy.Get<string>("EndTime"), cts.Token).ConfigureAwait(false);
 						}
 						throw new InvalidRequestException($"The request is invalid [({requestInfo.Verb}): {requestInfo.GetURI()}]");
 
@@ -339,8 +372,9 @@ namespace net.vieapps.Services.Logs
 					this.Logger.LogInformation("Start re-prepare storages of logs");
 				this.PrepareLogStoragesAsync(false, args?.FirstOrDefault(arg => arg.IsStartsWith("/dont-drop")) == null).Execute(true, ex => this.Logger.LogError($"Error occurred while preparing storages of service logs => {ex.Message}", ex));
 				this.EnsureIndexesAsync(RepositoryMediator.GetEntityDefinition<TraceLog>()).Execute(true, ex => this.Logger.LogError($"Error occurred while preparing trace logs => {ex.Message}", ex));
-				this.EnsureIndexesAsync(RepositoryMediator.GetEntityDefinition<SystemMetric>()).Execute(true, ex => this.Logger.LogError($"Error occurred while preparing system metrics => {ex.Message}", ex));
 				this.EnsureIndexesAsync(RepositoryMediator.GetEntityDefinition<UsageLog>()).Execute(true, ex => this.Logger.LogError($"Error occurred while preparing usage logs => {ex.Message}", ex));
+				this.EnsureIndexesAsync(RepositoryMediator.GetEntityDefinition<AuditLog>()).Execute(true, ex => this.Logger.LogError($"Error occurred while preparing audit logs => {ex.Message}", ex));
+				this.EnsureIndexesAsync(RepositoryMediator.GetEntityDefinition<SystemMetric>()).Execute(true, ex => this.Logger.LogError($"Error occurred while preparing system metrics => {ex.Message}", ex));
 				stopwatch.Stop();
 				if (this.IsDebug)
 					this.Logger.LogInformation($"Complete re-prepare storages of service-logs - Execution times: {stopwatch.GetElapsedTimes()}");
@@ -384,6 +418,31 @@ namespace net.vieapps.Services.Logs
 				{
 					this.Logger.LogError($"Error occurred while preparing indexes of '{entityDefinition.CollectionName}' => {ex.Message}", ex);
 				}
+		}
+
+		async Task PrepareLogStoragesAsync(bool checkTime = true, bool dropCollection = true)
+		{
+			var entityDefinition = !checkTime || ((DateTime.Now.DayOfWeek == DayOfWeek.Wednesday || DateTime.Now.DayOfWeek == DayOfWeek.Saturday) && DateTime.Now.Hour == 23 && DateTime.Now.Minute > 45 && DateTime.Now.Minute < 57)
+				? RepositoryMediator.GetEntityDefinition<ServiceLog>()
+				: null;
+			var dataSource = entityDefinition?.GetPrimaryDataSource();
+			if (dataSource != null && dataSource.Mode == RepositoryMode.NoSQL)
+				try
+				{
+					if (dropCollection)
+					{
+						await dataSource.DropCollectionAsync<ServiceLog>(entityDefinition, this.CancellationToken).ConfigureAwait(false);
+						if (this.IsDebug)
+							this.Logger.LogInformation("Collection of service logs was dropped successful");
+					}
+					await this.EnsureIndexesAsync(entityDefinition).ConfigureAwait(false);
+				}
+				catch (Exception ex)
+				{
+					this.Logger.LogError($"Error occurred while preparing storages of service logs => {ex.Message}", ex);
+				}
+			else if (entityDefinition == null && DateTime.Now.Hour == 23 && DateTime.Now.Minute > 45 && DateTime.Now.Minute < 57)
+				await this.EnsureIndexesAsync(RepositoryMediator.GetEntityDefinition<ServiceLog>()).ConfigureAwait(false);
 		}
 		#endregion
 
@@ -1016,30 +1075,160 @@ namespace net.vieapps.Services.Logs
 		}
 		#endregion
 
-		async Task PrepareLogStoragesAsync(bool checkTime = true, bool dropCollection = true)
+		#region Working with audit logs
+		bool IsValidAuditLog(AuditLog log)
+			=> log != null && !string.IsNullOrWhiteSpace(log.ID) && log.Time != default && !string.IsNullOrWhiteSpace(log.ServiceName) && !string.IsNullOrWhiteSpace(log.ObjectName) && !string.IsNullOrWhiteSpace(log.Operation) && !string.IsNullOrWhiteSpace(log.ActorType) && !string.IsNullOrWhiteSpace(log.ActorID) && (log.Status == "ok" || log.Status == "error" || log.Status == "denied" || log.Status == "canceled");
+
+		async Task PrepareAuditLogsAsync()
 		{
-			var entityDefinition = !checkTime || ((DateTime.Now.DayOfWeek == DayOfWeek.Wednesday || DateTime.Now.DayOfWeek == DayOfWeek.Saturday) && DateTime.Now.Hour == 23 && DateTime.Now.Minute > 45 && DateTime.Now.Minute < 57)
-				? RepositoryMediator.GetEntityDefinition<ServiceLog>()
-				: null;
-			var dataSource = entityDefinition?.GetPrimaryDataSource();
-			if (dataSource != null && dataSource.Mode == RepositoryMode.NoSQL)
-				try
+			try
+			{
+				var filePaths = UtilityService.GetFiles(this.LogsPath, "zlogs.audits.*.json", this.NumberOfLogItems, orderMode: "Ascending");
+				foreach (var filePath in filePaths)
 				{
-					if (dropCollection)
+					if (!this.PendingAuditFiles.TryAdd(filePath, 0))
+						continue;
+
+					var queued = false;
+					try
 					{
-						await dataSource.DropCollectionAsync<ServiceLog>(entityDefinition, this.CancellationToken).ConfigureAwait(false);
-						if (this.IsDebug)
-							this.Logger.LogInformation("Collection of service-logs was dropped successful");
+						AuditLog log = null;
+						await UtilityService.ReadAsJsonAsync(filePath, this.CancellationToken, null, json => log = json.As<AuditLog>(false)).ConfigureAwait(false);
+
+						if (!this.IsValidAuditLog(log))
+						{
+							this.Logger.LogWarning($"Invalid audit log file => {filePath}");
+							continue;
+						}
+
+						await this.AuditLogs.Writer.WriteAsync((log, filePath), this.CancellationToken).ConfigureAwait(false);
+						queued = true;
 					}
-					await this.EnsureIndexesAsync(entityDefinition).ConfigureAwait(false);
+					catch (OperationCanceledException)
+					{
+						throw;
+					}
+					catch (FileNotFoundException) { }
+					catch (Exception ex)
+					{
+						this.Logger.LogError($"Error preparing audit log [{filePath}] => {ex.Message}", ex);
+					}
+					finally
+					{
+						if (!queued)
+							this.PendingAuditFiles.TryRemove(filePath, out _);
+					}
 				}
-				catch (Exception ex)
-				{
-					this.Logger.LogError($"Error occurred while preparing storages of service-logs => {ex.Message}", ex);
-				}
-			else if (entityDefinition == null && DateTime.Now.Hour == 23 && DateTime.Now.Minute > 45 && DateTime.Now.Minute < 57)
-				await this.EnsureIndexesAsync(RepositoryMediator.GetEntityDefinition<ServiceLog>()).ConfigureAwait(false);
+			}
+			catch (OperationCanceledException) { }
+			catch (Exception ex)
+			{
+				this.Logger.LogError($"Error preparing audit logs => {ex.Message}", ex);
+			}
 		}
+
+		async Task FlushAuditLogsAsync()
+		{
+			try
+			{
+				while (await this.AuditLogs.Reader.WaitToReadAsync(this.CancellationToken).ConfigureAwait(false))
+				{
+					while (this.AuditLogs.Reader.TryRead(out var item))
+					{
+						try
+						{
+							if (!this.IsValidAuditLog(item.Log))
+							{
+								this.Logger.LogWarning($"Invalid queued audit log [{item.FilePath}]");
+								continue;
+							}
+
+							await AuditLog.CreateAsync(item.Log, this.CancellationToken).ConfigureAwait(false);
+							try
+							{
+								File.Delete(item.FilePath);
+							}
+							catch (Exception ex)
+							{
+								this.Logger.LogWarning($"Audit persisted, but source file could not be deleted [{item.FilePath}] => {ex.Message}");
+							}
+						}
+						catch (OperationCanceledException)
+						{
+							throw;
+						}
+						catch (Exception ex)
+						{
+							this.Logger.LogError($"Error persisting audit log [{item.Log?.ID}] => {ex.Message}", ex);
+						}
+						finally
+						{
+							this.PendingAuditFiles.TryRemove(item.FilePath, out _);
+						}
+					}
+				}
+			}
+			catch (OperationCanceledException) { }
+			catch (Exception ex)
+			{
+				this.Logger.LogError($"Error flushing audit logs => {ex.Message}", ex);
+			}
+		}
+
+		async Task<JToken> FetchAuditLogsAsync(int pageNumber, int pageSize, string correlationID, string traceID, string actorType, string actorID, string serviceName, string objectName, string objectID, string systemID, string operation, string status, string startTime, string endTime, CancellationToken cancellationToken)
+		{
+			var filter = Filters<AuditLog>.And();
+
+			if (!string.IsNullOrWhiteSpace(correlationID))
+				filter.Add(Filters<AuditLog>.Equals("CorrelationID", correlationID.Trim().ToLower()));
+
+			if (!string.IsNullOrWhiteSpace(traceID))
+				filter.Add(Filters<AuditLog>.Equals("TraceID", traceID.Trim().ToLower()));
+
+			if (!string.IsNullOrWhiteSpace(actorType))
+				filter.Add(Filters<AuditLog>.Equals("ActorType", actorType.Trim()));
+
+			if (!string.IsNullOrWhiteSpace(actorID))
+				filter.Add(Filters<AuditLog>.Equals("ActorID", actorID.Trim()));
+
+			if (!string.IsNullOrWhiteSpace(serviceName))
+				filter.Add(Filters<AuditLog>.Equals("ServiceName", serviceName.Trim().ToLower()));
+
+			if (!string.IsNullOrWhiteSpace(objectName))
+				filter.Add(Filters<AuditLog>.Equals("ObjectName", objectName.Trim().ToLower()));
+
+			if (!string.IsNullOrWhiteSpace(objectID))
+				filter.Add(Filters<AuditLog>.Equals("ObjectID", objectID.Trim()));
+
+			if (!string.IsNullOrWhiteSpace(systemID))
+				filter.Add(Filters<AuditLog>.Equals("SystemID", systemID.Trim()));
+
+			if (!string.IsNullOrWhiteSpace(operation))
+				filter.Add(Filters<AuditLog>.Equals("Operation", operation.Trim()));
+
+			if (!string.IsNullOrWhiteSpace(status))
+				filter.Add(Filters<AuditLog>.Equals("Status", status.Trim()));
+
+			if (DateTime.TryParse(startTime, out var start))
+				filter.Add(Filters<AuditLog>.GreaterOrEquals("Time", start));
+
+			if (DateTime.TryParse(endTime, out var end))
+				filter.Add(Filters<AuditLog>.LessThanOrEquals("Time", end));
+
+			var totalRecords = await AuditLog.CountAsync(filter, null, false, null, 0, cancellationToken).ConfigureAwait(false);
+			var totalPages = (totalRecords, pageSize).GetTotalPages();
+			var sort = Sorts<AuditLog>.Descending("Time");
+
+			var objects = await AuditLog.FindAsync(filter, sort, pageSize, pageNumber, null, false, null, 0, cancellationToken).ConfigureAwait(false);
+			return new JObject
+			{
+				{ "FilterBy", filter.ToClientJson() },
+				{ "SortBy", sort.ToClientJson() },
+				{ "Pagination", (totalRecords, totalPages, pageSize, totalPages > 0 && pageNumber > totalPages ? totalPages : pageNumber).GetPagination() },
+				{ "Objects", objects.Select(obj => obj.ToJson()).ToJArray() }
+			};
+		}
+		#endregion
 
 		#region Working with metrics (system statistics)
 		async ValueTask UpdateServiceStatisticsAsync(CommunicateMessage message)
