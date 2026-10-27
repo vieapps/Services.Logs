@@ -25,9 +25,9 @@ namespace net.vieapps.Services.Logs
 		public override string ServiceDescription => "Logs, Traces, Usages, Audits & Observability Metrics";
 
 		#region Properties
-		Cache Cache { get; } = Cache.CreateInstance("VIEApps-Services-ServiceLogs", Components.Utility.Logger.GetLoggerFactory(), "true".IsEquals(UtilityService.GetAppSetting("ServiceLogs:Cache:L1")));
+		Cache Cache { get; } = Cache.CreateInstance("VIEApps-Services-Logs", Components.Utility.Logger.GetLoggerFactory(), "true".IsEquals(UtilityService.GetAppSetting("Logs:Cache:L1")));
 
-		string LogsPath { get; } = UtilityService.GetAppSetting("Path:ServiceLogs", "logs");
+		string LogsPath { get; } = UtilityService.GetAppSetting("Path:Logs", "logs");
 
 		bool IsDebug { get; set; } = false;
 
@@ -35,43 +35,50 @@ namespace net.vieapps.Services.Logs
 
 		bool FlushingServiceLogs { get; set; } = false;
 
-		bool WriteServiceLogsIntoSeparatedFiles { get; } = "true".IsEquals(UtilityService.GetAppSetting("ServiceLogs:WriteServiceLogsIntoSeparatedFiles"));
+		bool WriteLogsIntoSeparatedFiles { get; } = "true".IsEquals(UtilityService.GetAppSetting("Logs:WriteLogsIntoSeparatedFiles"));
 
-		int MaxTriedTimes { get; } = Int32.TryParse(UtilityService.GetAppSetting("ServiceLogs:MaxTriedTimes"), out var numbers) && numbers > 0 ? numbers : 2;
+		int MaxTriedTimes { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:MaxTriedTimes"), out var numbers) && numbers > 0 ? numbers : 2;
 
-		int NumberOfLogItems { get; } = Int32.TryParse(UtilityService.GetAppSetting("ServiceLogs:Numbers"), out var numbers) && numbers > 0 ? numbers : 2000;
+		int NumberOfLogItems { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:Numbers"), out var numbers) && numbers > 0 ? numbers : 2000;
 
-		bool UseInternalQueue { get; } = "true".IsEquals(UtilityService.GetAppSetting("ServiceLogs:Queue", "true"));
+		int QueueInterval { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:Queue:Interval"), out var interval) && interval > 0 ? interval : 7;
 
-		int InternalQueueInterval { get; } = Int32.TryParse(UtilityService.GetAppSetting("ServiceLogs:Queue:Interval"), out var interval) && interval > 0 ? interval : 7;
+		static int QueueSize { get; } = Int32.TryParse(UtilityService.GetAppSetting("Logs:Queue:Size"), out var size) && size > 0 ? size : 256;
 
-		static int InternalQueueSize { get; } = Int32.TryParse(UtilityService.GetAppSetting("ServiceLogs:Queue:Size"), out var size) && size > 0 ? size : 256;
+		static BoundedChannelFullMode QueueMode { get; } = Enum.TryParse<BoundedChannelFullMode>(UtilityService.GetAppSetting("Logs:Queue:Mode"), out var mode) ? mode : BoundedChannelFullMode.DropOldest;
 
-		static BoundedChannelFullMode InternalQueueFullMode { get; } = Enum.TryParse<BoundedChannelFullMode>(UtilityService.GetAppSetting("ServiceLogs:Queue:Mode"), out var mode) ? mode : BoundedChannelFullMode.DropOldest;
-
-		Channel<IEnumerable<ServiceLog>> ServiceLogs { get; } = Channel.CreateBounded<IEnumerable<ServiceLog>>(new BoundedChannelOptions(InternalQueueSize)
+		Channel<IEnumerable<ServiceLog>> ServiceLogs { get; } = Channel.CreateBounded<IEnumerable<ServiceLog>>(new BoundedChannelOptions(QueueSize)
 		{
 			SingleWriter = false,
 			SingleReader = true,
-			FullMode = InternalQueueFullMode
+			FullMode = QueueMode
 		});
 
 		Task ServiceLogsFlusher { get; set; }
 
-		Channel<IEnumerable<TraceLog>> TraceLogs { get; } = Channel.CreateBounded<IEnumerable<TraceLog>>(new BoundedChannelOptions(InternalQueueSize)
+		Channel<IEnumerable<TraceLog>> TraceLogs { get; } = Channel.CreateBounded<IEnumerable<TraceLog>>(new BoundedChannelOptions(QueueSize)
 		{
 			SingleWriter = false,
 			SingleReader = true,
-			FullMode = InternalQueueFullMode
+			FullMode = QueueMode
 		});
 
 		Task TraceLogsFlusher { get; set; }
 
-		bool IsPreparer { get; } = "true".IsEquals(UtilityService.GetAppSetting("ServiceLogs:Preparer"));
+		Channel<IEnumerable<UsageLog>> UsageLogs { get; } = Channel.CreateBounded<IEnumerable<UsageLog>>(new BoundedChannelOptions(QueueSize)
+		{
+			SingleWriter = false,
+			SingleReader = true,
+			FullMode = QueueMode
+		});
 
-		bool IsCollector { get; } = "true".IsEquals(UtilityService.GetAppSetting("ServiceLogs:Collector"));
+		Task UsageLogsFlusher { get; set; }
 
-		bool IsServiceStatisticsSampleEnabled { get; } = "true".IsEquals(UtilityService.GetAppSetting("ServiceLogs:Statistics:Samples"));
+		bool IsPreparer { get; } = "true".IsEquals(UtilityService.GetAppSetting("Logs:Preparer"));
+
+		bool IsCollector { get; } = "true".IsEquals(UtilityService.GetAppSetting("Logs:Collector"));
+
+		bool IsServiceStatisticsSampleEnabled { get; } = "true".IsEquals(UtilityService.GetAppSetting("Logs:Statistics:Samples"));
 
 		Channel<StatisticMessage> ServiceStatistics { get; set; }
 
@@ -88,16 +95,15 @@ namespace net.vieapps.Services.Logs
 			this.Syncable = false;
 			this.IsDebug = this.IsDebugLogEnabled || args?.FirstOrDefault(arg => arg.IsStartsWith("/logs")) != null;
 
-			// use log internal queue
-			if (this.UseInternalQueue)
-			{
-				this.ServiceLogsFlusher = Task.Run(this.FlushServiceLogsAsync);
-				this.StartTimer(this.PrepareServiceLogsAsync, this.InternalQueueInterval);
-				this.TraceLogsFlusher = Task.Run(this.FlushTraceLogsAsync);
-				this.StartTimer(this.PrepareTraceLogsAsync, this.InternalQueueInterval);
-				if (this.IsDebug)
-					this.Logger?.LogInformation($"Use internal queue [{this.InternalQueueInterval} second(s)]");
-			}
+			// queues
+			this.ServiceLogsFlusher = Task.Run(this.FlushServiceLogsAsync);
+			this.StartTimer(this.PrepareServiceLogsAsync, this.QueueInterval);
+
+			this.TraceLogsFlusher = Task.Run(this.FlushTraceLogsAsync);
+			this.StartTimer(this.PrepareTraceLogsAsync, this.QueueInterval);
+
+			this.UsageLogsFlusher = Task.Run(this.FlushUsageLogsAsync);
+			this.StartTimer(this.PrepareUsageLogsAsync, this.QueueInterval);
 
 			// as log preparer
 			if (this.IsPreparer)
@@ -134,13 +140,14 @@ namespace net.vieapps.Services.Logs
 
 		public override async Task StopAsync(string[] args = null, Action<IService> next = null)
 		{
-			if (this.UseInternalQueue)
-			{
-				this.ServiceLogs.Writer.TryComplete();
-				await this.ServiceLogsFlusher.ConfigureAwait(false);
-				this.TraceLogs.Writer.TryComplete();
-				await this.TraceLogsFlusher.ConfigureAwait(false);
-			}
+			this.ServiceLogs.Writer.TryComplete();
+			await this.ServiceLogsFlusher.ConfigureAwait(false);
+
+			this.TraceLogs.Writer.TryComplete();
+			await this.TraceLogsFlusher.ConfigureAwait(false);
+
+			this.UsageLogs.Writer.TryComplete();
+			await this.UsageLogsFlusher.ConfigureAwait(false);
 
 			if (this.IsCollector)
 			{
@@ -175,18 +182,7 @@ namespace net.vieapps.Services.Logs
 							var filterBy = request.Get<ExpandoObject>("FilterBy");
 							return await this.FetchServiceLogsAsync(pageNumber > 0 ? pageNumber : 1, pageSize > 0 ? pageSize : 100, filterBy.Get<string>("CorrelationID"), filterBy.Get<string>("ServiceName"), filterBy.Get<string>("ObjectName"), filterBy.Get<string>("StartTime"), filterBy.Get<string>("EndTime"), cts.Token).ConfigureAwait(false);
 						}
-						else if (requestInfo.Verb.IsEquals("POST") && requestInfo.IsAuthenticated())
-						{
-							await this.WriteServiceLogAsync(requestInfo.BodyAsJson.As<ServiceLog>(false, (log, _) =>
-							{
-								log.ID = string.IsNullOrWhiteSpace(log.ID) ? UtilityService.NewUUID : log.ID;
-								log.ServiceName = log.ServiceName?.ToLower();
-								log.ObjectName = log.ObjectName?.ToLower();
-							}), cts.Token).ConfigureAwait(false);
-							return new JObject();
-						}
-						else
-							throw new InvalidRequestException($"The request is invalid [({requestInfo.Verb}): {requestInfo.GetURI()}]");
+						throw new InvalidRequestException($"The request is invalid [({requestInfo.Verb}): {requestInfo.GetURI()}]");
 
 					case "trace":
 					case "tracelog":
@@ -202,8 +198,23 @@ namespace net.vieapps.Services.Logs
 							var filterBy = request.Get<ExpandoObject>("FilterBy");
 							return await this.FetchTraceLogsAsync(pageNumber > 0 ? pageNumber : 1, pageSize > 0 ? pageSize : 100, filterBy.Get<string>("CorrelationID"), filterBy.Get<string>("ServiceName"), filterBy.Get<string>("Operation"), filterBy.Get<string>("StartTime"), filterBy.Get<string>("EndTime"), cts.Token).ConfigureAwait(false);
 						}
-						else
-							throw new InvalidRequestException($"The request is invalid [({requestInfo.Verb}): {requestInfo.GetURI()}]");
+						throw new InvalidRequestException($"The request is invalid [({requestInfo.Verb}): {requestInfo.GetURI()}]");
+
+					case "usage":
+					case "usagelog":
+					case "usagelogs":
+					case "usage.log":
+					case "usage.logs":
+						if (requestInfo.Verb.IsEquals("GET"))
+						{
+							var request = requestInfo.GetRequestExpando();
+							var pagination = request.Get<ExpandoObject>("Pagination");
+							var pageNumber = pagination.Get("PageNumber", 1);
+							var pageSize = pagination.Get("PageSize", 100);
+							var filterBy = request.Get<ExpandoObject>("FilterBy");
+							return await this.FetchUsageLogsAsync(pageNumber > 0 ? pageNumber : 1, pageSize > 0 ? pageSize : 100,	filterBy.Get<string>("CorrelationID"), filterBy.Get<string>("TraceID"), filterBy.Get<string>("ServiceName"), filterBy.Get<string>("Operation"), filterBy.Get<string>("Type"), filterBy.Get<string>("Provider"), filterBy.Get<string>("Model"), filterBy.Get<string>("SystemID"), filterBy.Get<string>("UserID"), filterBy.Get<string>("StartTime"), filterBy.Get<string>("EndTime"), cts.Token).ConfigureAwait(false);
+						}
+						throw new InvalidRequestException($"The request is invalid [({requestInfo.Verb}): {requestInfo.GetURI()}]");
 
 					default:
 						throw new InvalidRequestException($"The request is invalid [({requestInfo.Verb}): {requestInfo.GetURI()}]");
@@ -267,6 +278,29 @@ namespace net.vieapps.Services.Logs
 				stopwatch.Stop();
 				if (this.IsDebug)
 					this.Logger.LogInformation($"Complete flush trace logs from files into database - Execution times: {stopwatch.GetElapsedTimes()}");
+
+
+				stopwatch.Restart();
+				if (this.IsDebug)
+					this.Logger.LogInformation("Start flush usage logs from files into database");
+
+				if (this.MaxTriedTimes > 1)
+				{
+					var triedTimes = 0;
+					this.FlushUsageLogsAsync((args ?? []).Concat(["/order-mode:Descending"])).Execute(true, ex => this.Logger.LogError($"Error occurred while flushing usage logs => {ex.Message}", ex));
+					triedTimes++;
+					while (triedTimes < this.MaxTriedTimes)
+					{
+						this.FlushUsageLogsAsync(args).Execute(true, ex => this.Logger.LogError($"Error occurred while flushing usage logs => {ex.Message}", ex));
+						triedTimes++;
+					}
+				}
+				else
+					this.FlushUsageLogsAsync(args).Execute(true, ex => this.Logger.LogError($"Error occurred while flushing usage logs => {ex.Message}", ex));
+
+				stopwatch.Stop();
+				if (this.IsDebug)
+					this.Logger.LogInformation($"Complete flush usage logs from files into database - Execution times: {stopwatch.GetElapsedTimes()}");
 			}
 
 			if (args?.FirstOrDefault(arg => arg.IsStartsWith("/clean")) != null)
@@ -286,6 +320,16 @@ namespace net.vieapps.Services.Logs
 				stopwatch.Stop();
 				if (this.IsDebug)
 					this.Logger.LogInformation($"Complete clean old trace logs from database - Execution times: {stopwatch.GetElapsedTimes()}");
+
+				stopwatch.Restart();
+				if (this.IsDebug)
+					this.Logger.LogInformation("Start clean old usage logs from database");
+
+				this.CleanUsageLogsAsync().Execute(true, ex => this.Logger.LogError($"Error occurred while cleaning usage logs => {ex.Message}", ex));
+
+				stopwatch.Stop();
+				if (this.IsDebug)
+					this.Logger.LogInformation($"Complete clean old usage logs from database - Execution times: {stopwatch.GetElapsedTimes()}");
 			}
 
 			stopwatch.Restart();
@@ -296,6 +340,7 @@ namespace net.vieapps.Services.Logs
 				this.PrepareLogStoragesAsync(false, args?.FirstOrDefault(arg => arg.IsStartsWith("/dont-drop")) == null).Execute(true, ex => this.Logger.LogError($"Error occurred while preparing storages of service logs => {ex.Message}", ex));
 				this.EnsureIndexesAsync(RepositoryMediator.GetEntityDefinition<TraceLog>()).Execute(true, ex => this.Logger.LogError($"Error occurred while preparing trace logs => {ex.Message}", ex));
 				this.EnsureIndexesAsync(RepositoryMediator.GetEntityDefinition<SystemMetric>()).Execute(true, ex => this.Logger.LogError($"Error occurred while preparing system metrics => {ex.Message}", ex));
+				this.EnsureIndexesAsync(RepositoryMediator.GetEntityDefinition<UsageLog>()).Execute(true, ex => this.Logger.LogError($"Error occurred while preparing usage logs => {ex.Message}", ex));
 				stopwatch.Stop();
 				if (this.IsDebug)
 					this.Logger.LogInformation($"Complete re-prepare storages of service-logs - Execution times: {stopwatch.GetElapsedTimes()}");
@@ -387,27 +432,6 @@ namespace net.vieapps.Services.Logs
 		#endregion
 
 		#region Working with service logs
-		Task WriteServiceLogAsync(ServiceLog log, CancellationToken cancellationToken)
-			=> this.WriteServiceLogsAsync([log], cancellationToken);
-
-		Task WriteServiceLogsAsync(IEnumerable<ServiceLog> logs, CancellationToken cancellationToken)
-			=> logs.ForEachAsync(log => log.ToString(Formatting.Indented).SaveAsTextAsync(Path.Combine(this.LogsPath, $"zlogs.services.{DateTime.Now:yyyyMMddHHmmssffffff}.{UtilityService.NewUUID}.json"), cancellationToken), true, false);
-
-		public Task WriteServiceLogAsync(string correlationID, string developerID, string appID, string serviceName, string objectName, string log, string stack = null, CancellationToken cancellationToken = default)
-			=> this.WriteServiceLogsAsync(correlationID, developerID, appID, serviceName, objectName, string.IsNullOrWhiteSpace(log) ? null : [log], stack, cancellationToken);
-
-		public Task WriteServiceLogsAsync(string correlationID, string developerID, string appID, string serviceName, string objectName, List<string> logs, string stack = null, CancellationToken cancellationToken = default)
-			=> this.WriteServiceLogAsync(new ServiceLog
-			{
-				CorrelationID = correlationID,
-				DeveloperID = string.IsNullOrWhiteSpace(developerID) ? null : developerID,
-				AppID = string.IsNullOrWhiteSpace(appID) ? null : appID,
-				ServiceName = (string.IsNullOrWhiteSpace(serviceName) ? "APIGateway" : serviceName).ToLower(),
-				ObjectName = (string.IsNullOrWhiteSpace(objectName) || objectName.IsEquals(serviceName) ? "" : objectName).ToLower(),
-				Logs = "" + logs?.Where(log => !string.IsNullOrWhiteSpace(log)).Join("\r\n"),
-				Stack = string.IsNullOrWhiteSpace(stack) ? null : stack
-			}, cancellationToken);
-
 		async Task<IEnumerable<ServiceLog>> PrepareServiceLogsAsync(string[] args)
 		{
 			var stopwatch = Stopwatch.StartNew();
@@ -425,12 +449,7 @@ namespace net.vieapps.Services.Logs
 			{
 				try
 				{
-					await UtilityService.ReadAsJsonAsync(filePath, this.CancellationToken, null, json => logs.Add(json.As<ServiceLog>(false, (log, _) =>
-					{
-						log.ID = string.IsNullOrWhiteSpace(log.ID) ? UtilityService.NewUUID : log.ID;
-						log.ServiceName = log.ServiceName?.ToLower();
-						log.ObjectName = log.ObjectName?.ToLower();
-					}))).ConfigureAwait(false);
+					await UtilityService.ReadAsJsonAsync(filePath, this.CancellationToken, null, json => logs.Add(json.As<ServiceLog>(false))).ConfigureAwait(false);
 				}
 				catch (OperationCanceledException) { }
 				catch (UnauthorizedAccessException) { }
@@ -460,7 +479,7 @@ namespace net.vieapps.Services.Logs
 			try
 			{
 				var logs = await this.PrepareServiceLogsAsync(null).ConfigureAwait(false);
-				if (InternalQueueFullMode == BoundedChannelFullMode.Wait)
+				if (QueueMode == BoundedChannelFullMode.Wait)
 					await this.ServiceLogs.Writer.WriteAsync(logs, this.CancellationToken).ConfigureAwait(false);
 				else
 					this.ServiceLogs.Writer.TryWrite(logs);
@@ -532,7 +551,7 @@ namespace net.vieapps.Services.Logs
 			}
 			await Task.WhenAll(tasks).ConfigureAwait(false);
 
-			if (this.WriteServiceLogsIntoSeparatedFiles)
+			if (this.WriteLogsIntoSeparatedFiles)
 				await logs.Where(log => log != null).ForEachAsync(async log =>
 				{
 					try
@@ -611,7 +630,7 @@ namespace net.vieapps.Services.Logs
 				{
 					await UtilityService.ReadAsJsonAsync(filePath, this.CancellationToken, null, json =>
 					{
-						var log = json.As<TraceLog>(false, (trace, _) => trace.ServiceName = trace.ServiceName?.ToLower());
+						var log = json.As<TraceLog>(false);
 						if (log != null	&& !string.IsNullOrWhiteSpace(log.ID)	&& !string.IsNullOrWhiteSpace(log.CorrelationID) && !string.IsNullOrWhiteSpace(log.Operation)	&& log.EndTime != null)
 						{
 							logs.Add(log);
@@ -654,7 +673,7 @@ namespace net.vieapps.Services.Logs
 				if (!logs.Any())
 					return;
 
-				if (InternalQueueFullMode == BoundedChannelFullMode.Wait)
+				if (QueueMode == BoundedChannelFullMode.Wait)
 					await this.TraceLogs.Writer.WriteAsync(logs, this.CancellationToken).ConfigureAwait(false);
 				else
 					this.TraceLogs.Writer.TryWrite(logs);
@@ -764,10 +783,10 @@ namespace net.vieapps.Services.Logs
 
 			return new JObject
 			{
-					{ "FilterBy", filter.ToClientJson() },
-					{ "SortBy", sort.ToClientJson() },
-					{ "Pagination", (totalRecords, totalPages, pageSize, totalPages > 0 && pageNumber > totalPages ? totalPages : pageNumber).GetPagination() },
-					{ "Objects", objects.Select(obj => obj.ToJson()).ToJArray() }
+				{ "FilterBy", filter.ToClientJson() },
+				{ "SortBy", sort.ToClientJson() },
+				{ "Pagination", (totalRecords, totalPages, pageSize, totalPages > 0 && pageNumber > totalPages ? totalPages : pageNumber).GetPagination() },
+				{ "Objects", objects.Select(obj => obj.ToJson()).ToJArray() }
 			};
 		}
 
@@ -780,6 +799,220 @@ namespace net.vieapps.Services.Logs
 			var filter = Filters<TraceLog>.LessThan("StartTime", DateTime.Now.AddDays(0 - days));
 
 			return TraceLog.DeleteManyAsync(filter, null, this.CancellationToken);
+		}
+		#endregion
+
+		#region Working with usage logs
+		async Task<IEnumerable<UsageLog>> PrepareUsageLogsAsync(string[] args)
+		{
+			var stopwatch = Stopwatch.StartNew();
+			var numberOfLogs = Int32.TryParse(args?.FirstOrDefault(arg => arg.IsStartsWith("/number:"))?.Replace("/number:", ""), out var numberOfItems) && numberOfItems > 0 ? numberOfItems : this.NumberOfLogItems;
+
+			if (this.IsDebug)
+				this.Logger.LogInformation($"Get {numberOfLogs:###,###,##0} usage log files");
+
+			var filePaths = UtilityService.GetFiles(this.LogsPath, "zlogs.usages.*.json", numberOfLogs, orderMode: args?.FirstOrDefault(arg => arg.IsStartsWith("/order-mode:"))?.Replace("/order-mode:", "") ?? "Ascending");
+
+			if (this.IsDebug)
+				this.Logger.LogInformation($"Done fetch {filePaths.Count:###,###,##0} usage log files - Times for fetching: {stopwatch.GetElapsedTimes()}");
+
+			var logs = new List<UsageLog>();
+			stopwatch.Restart();
+
+			foreach (var filePath in filePaths)
+			{
+				var prepared = false;
+				try
+				{
+					await UtilityService.ReadAsJsonAsync(filePath, this.CancellationToken, null, json =>
+					{
+						var log = json.As<UsageLog>(false);
+						if (log != null && !string.IsNullOrWhiteSpace(log.ID) && !string.IsNullOrWhiteSpace(log.CorrelationID) && !string.IsNullOrWhiteSpace(log.ServiceName) && !string.IsNullOrWhiteSpace(log.Operation) && !string.IsNullOrWhiteSpace(log.Type) && log.StartTime != default && log.EndTime != null	&& log.EndTime.Value >= log.StartTime)
+						{
+							logs.Add(log);
+							prepared = true;
+						}
+						else
+							this.Logger.LogWarning($"Invalid usage log file => {filePath}");
+					}).ConfigureAwait(false);
+				}
+				catch (OperationCanceledException) { }
+				catch (UnauthorizedAccessException) { }
+				catch (FileNotFoundException) { }
+				catch (Exception ex)
+				{
+					if (!ex.Message.IsContains("cannot access the file"))
+						this.Logger.LogError($"Error occurred while reading usage JSON file => {ex.Message}", ex);
+				}
+				finally
+				{
+					if (prepared)
+						try
+						{
+							File.Delete(filePath);
+						}
+						catch { }
+				}
+			}
+
+			if (this.IsDebug)
+				this.Logger.LogInformation($"Done prepare {logs.Count:###,###,##0} usage logs - Times for preparing: {stopwatch.GetElapsedTimes()}");
+
+			return logs;
+		}
+
+		async Task PrepareUsageLogsAsync()
+		{
+			try
+			{
+				var logs = await this.PrepareUsageLogsAsync(null).ConfigureAwait(false);
+				if (!logs.Any())
+					return;
+
+				if (QueueMode == BoundedChannelFullMode.Wait)
+					await this.UsageLogs.Writer.WriteAsync(logs, this.CancellationToken).ConfigureAwait(false);
+				else
+					this.UsageLogs.Writer.TryWrite(logs);
+			}
+			catch (OperationCanceledException) { }
+			catch (Exception ex)
+			{
+				this.Logger.LogError($"Error occurred while preparing usage logs (queue) => {ex.Message}", ex);
+			}
+		}
+
+		async Task FlushUsageLogsAsync(string[] args)
+		{
+			var logs = await this.PrepareUsageLogsAsync(args).ConfigureAwait(false);
+			var stopwatch = Stopwatch.StartNew();
+
+			await this.FlushUsageLogsAsync(logs, this.CancellationToken).ConfigureAwait(false);
+
+			if (this.IsDebug)
+				this.Logger.LogInformation($"Done flush {logs.Count():###,###,##0} usage logs into database - Times for flushing: {stopwatch.GetElapsedTimes()}");
+		}
+
+		async Task FlushUsageLogsAsync()
+		{
+			try
+			{
+				while (await this.UsageLogs.Reader.WaitToReadAsync(this.CancellationToken).ConfigureAwait(false))
+					while (this.UsageLogs.Reader.TryRead(out var logs))
+					{
+						await this.FlushUsageLogsAsync(logs, this.CancellationToken).ConfigureAwait(false);
+						if (this.IsDebug)
+							this.Logger?.LogInformation($"Dequeue and flush {logs.Count():###,###,##0} usage logs into database completed");
+					}
+			}
+			catch (OperationCanceledException) { }
+			catch (Exception ex)
+			{
+				this.Logger.LogError($"Error occurred while flushing usage logs (queue) => {ex.Message}", ex);
+			}
+		}
+
+		async Task FlushUsageLogsAsync(IEnumerable<UsageLog> logs, CancellationToken cancellationToken)
+		{
+			async Task flushLogsAsync(IEnumerable<UsageLog> input)
+			{
+				try
+				{
+					var stopwatch = Stopwatch.StartNew();
+					var data = input.Where(log => log != null && !string.IsNullOrWhiteSpace(log.ID) && !string.IsNullOrWhiteSpace(log.CorrelationID) && !string.IsNullOrWhiteSpace(log.ServiceName) && !string.IsNullOrWhiteSpace(log.Operation) && !string.IsNullOrWhiteSpace(log.Type) && log.StartTime != default && log.EndTime != null && log.EndTime.Value >= log.StartTime).ToList();
+					if (data.Count < 1)
+						return;
+
+					if (this.IsDebug)
+						this.Logger.LogInformation($"Start flush {data.Count:###,###,##0} usage logs into database");
+
+					await UsageLog.CreateManyAsync(data, cancellationToken).ConfigureAwait(false);
+
+					if (this.IsDebug)
+						this.Logger.LogInformation($"Complete flush {data.Count:###,###,##0} usage logs into database in {stopwatch.GetElapsedTimes()}");
+				}
+				catch (OperationCanceledException) { }
+				catch (Exception ex)
+				{
+					this.Logger.LogError($"Error occurred while flushing usage logs into database => {ex.Message}", ex);
+				}
+			}
+
+			var items = logs.ToList();
+			var tasks = new List<Task>();
+			var pageNumber = 0;
+			var pageSize = this.NumberOfLogItems > 10000 ? this.NumberOfLogItems / 5 : 2000;
+			var totalPages = Extensions.GetTotalPages(items.Count, pageSize);
+
+			while (pageNumber < totalPages)
+			{
+				tasks.Add(flushLogsAsync(items.Skip(pageNumber * pageSize).Take(pageSize)));
+				pageNumber++;
+			}
+
+			await Task.WhenAll(tasks).ConfigureAwait(false);
+		}
+
+		async Task<JToken> FetchUsageLogsAsync(int pageNumber, int pageSize, string correlationID, string traceID, string serviceName, string operation, string type, string provider, string model, string systemID, string userID, string startTime, string endTime, CancellationToken cancellationToken)
+		{
+			var filter = Filters<UsageLog>.And();
+
+			if (!string.IsNullOrWhiteSpace(correlationID))
+				filter.Add(Filters<UsageLog>.Equals("CorrelationID", correlationID.Trim().ToLower()));
+
+			if (!string.IsNullOrWhiteSpace(traceID))
+				filter.Add(Filters<UsageLog>.Equals("TraceID", traceID.Trim().ToLower()));
+
+			if (!string.IsNullOrWhiteSpace(serviceName))
+				filter.Add(Filters<UsageLog>.Equals("ServiceName", serviceName.Trim().ToLower()));
+
+			if (!string.IsNullOrWhiteSpace(operation))
+				filter.Add(Filters<UsageLog>.Equals("Operation", operation.Trim()));
+
+			if (!string.IsNullOrWhiteSpace(type))
+				filter.Add(Filters<UsageLog>.Equals("Type", type.Trim()));
+
+			if (!string.IsNullOrWhiteSpace(provider))
+				filter.Add(Filters<UsageLog>.Equals("Provider", provider.Trim()));
+
+			if (!string.IsNullOrWhiteSpace(model))
+				filter.Add(Filters<UsageLog>.Equals("Model", model.Trim()));
+
+			if (!string.IsNullOrWhiteSpace(systemID))
+				filter.Add(Filters<UsageLog>.Equals("SystemID", systemID.Trim()));
+
+			if (!string.IsNullOrWhiteSpace(userID))
+				filter.Add(Filters<UsageLog>.Equals("UserID", userID.Trim().ToLower()));
+
+			if (DateTime.TryParse(startTime, out var start))
+				filter.Add(Filters<UsageLog>.GreaterOrEquals("StartTime", start));
+
+			if (DateTime.TryParse(endTime, out var end))
+				filter.Add(Filters<UsageLog>.LessThanOrEquals("StartTime", end));
+
+			var totalRecords = await UsageLog.CountAsync(filter, null, false, null, 0, cancellationToken).ConfigureAwait(false);
+			var totalPages = (totalRecords, pageSize).GetTotalPages();
+
+			var sort = Sorts<UsageLog>.Descending("StartTime");
+			var objects = await UsageLog.FindAsync(filter, sort, pageSize, pageNumber, null, false, null, 0, cancellationToken).ConfigureAwait(false);
+
+			return new JObject
+			{
+				{ "FilterBy", filter.ToClientJson() },
+				{ "SortBy", sort.ToClientJson() },
+				{ "Pagination", (totalRecords, totalPages, pageSize, totalPages > 0 && pageNumber > totalPages ? totalPages : pageNumber).GetPagination() },
+				{ "Objects", objects.Select(obj => obj.ToJson()).ToJArray() }
+			};
+		}
+
+		Task CleanUsageLogsAsync()
+		{
+			if (this.IsDebug)
+				this.Logger.LogDebug("Clean old usage logs");
+
+			var days = Int32.TryParse(UtilityService.GetAppSetting("UsageLogs:Days", "30"), out var value) && value > 0 ? value : 30;
+			var filter = Filters<UsageLog>.LessThan("StartTime", DateTime.Now.AddDays(0 - days));
+
+			return UsageLog.DeleteManyAsync(filter, null, this.CancellationToken);
 		}
 		#endregion
 
